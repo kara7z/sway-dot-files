@@ -1,4 +1,9 @@
 #!/bin/sh
+# Portable — uses $HOME instead of hardcoded /home/kara
+WOFI_STYLE="${XDG_CONFIG_HOME:-$HOME/.config}/wofi/power.css"
+WIFI_PASS_SCRIPT="${XDG_CONFIG_HOME:-$HOME/.config}/waybar/wifi_pass.py"
+# Fallback if waybar is at ~/.config/waybar (repo layout)
+[ -f "$WIFI_PASS_SCRIPT" ] || WIFI_PASS_SCRIPT="$(dirname "$0")/wifi_pass.py"
 LOCK="/tmp/waybar_wifi_menu.lock"
 
 if [ -f "$LOCK" ]; then
@@ -53,7 +58,7 @@ chosen=$(echo "$list" | wofi --dmenu \
     --prompt "WiFi" --hide-search \
     --lines $count \
     --conf /dev/null \
-    --style /home/kara/.config/wofi/power.css)
+    --style "$WOFI_STYLE")
 
 [ -z "$chosen" ] && exit 0
 
@@ -65,7 +70,7 @@ if [ "$ssid" = "$current" ]; then
         --prompt "$ssid (Connected)" --hide-search \
         --lines 3 \
         --conf /dev/null \
-        --style /home/kara/.config/wofi/power.css)
+        --style "$WOFI_STYLE")
     [ "$action" = "Disconnect" ] && nmcli device disconnect "$iface"
     [ "$action" = "Forget" ] && nmcli connection delete "$ssid"
     exit 0
@@ -81,7 +86,7 @@ if [ -n "$security" ] && [ "$security" != "--" ]; then
             --prompt "$ssid" --hide-search \
             --lines 3 \
             --conf /dev/null \
-            --style /home/kara/.config/wofi/power.css)
+            --style "$WOFI_STYLE")
         [ "$action" = "Forget" ] && { nmcli connection delete "$ssid"; exit 0; }
         [ "$action" != "Connect" ] && exit 0
     else
@@ -90,14 +95,14 @@ if [ -n "$security" ] && [ "$security" != "--" ]; then
             --prompt "$ssid" --hide-search \
             --lines 2 \
             --conf /dev/null \
-            --style /home/kara/.config/wofi/power.css)
+            --style "$WOFI_STYLE")
         [ "$action" != "Connect" ] && exit 0
     fi
     result=$(nmcli device wifi connect "$ssid" 2>&1)
     if echo "$result" | grep -q "successfully"; then
         exit 0
     fi
-    pass=$(python3 /home/kara/.config/waybar/wifi_pass.py "$ssid" 2>/dev/null)
+    pass=$(python3 "$WIFI_PASS_SCRIPT" "$ssid" 2>/dev/null)
     [ -n "$pass" ] && nmcli device wifi connect "$ssid" password "$pass"
 else
     if [ -n "$saved" ]; then
@@ -106,7 +111,7 @@ else
             --prompt "$ssid" --hide-search \
             --lines 3 \
             --conf /dev/null \
-            --style /home/kara/.config/wofi/power.css)
+            --style "$WOFI_STYLE")
         [ "$action" = "Forget" ] && { nmcli connection delete "$ssid"; exit 0; }
         [ "$action" != "Connect" ] && exit 0
     else
@@ -115,7 +120,7 @@ else
             --prompt "$ssid" --hide-search \
             --lines 2 \
             --conf /dev/null \
-            --style /home/kara/.config/wofi/power.css)
+            --style "$WOFI_STYLE")
         [ "$action" != "Connect" ] && exit 0
     fi
     nmcli device wifi connect "$ssid" 2>/dev/null

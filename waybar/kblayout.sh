@@ -29,10 +29,11 @@ for i in data:
     if [ "$current" != "$last" ] && [ -n "$current" ]; then
         echo "$current"
         kill "$POPUP_PID" 2>/dev/null
+        WOFI_STYLE="${XDG_CONFIG_HOME:-$HOME/.config}/wofi/power.css"
         echo "$current" | wofi --dmenu \
             --width 200 --height 50 --location center \
             --hide-search --conf /dev/null \
-            --style /home/kara/.config/wofi/power.css &
+            --style "$WOFI_STYLE" &
         POPUP_PID=$!
         ( sleep 1 && kill "$POPUP_PID" 2>/dev/null ) &
         last="$current"

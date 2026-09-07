@@ -155,7 +155,7 @@
         "tooltip-format": "{ifname} via {gwaddr} ",
         "format-linked": "{ifname} (No IP) ",
         "format-disconnected": "Disconnected ⚠",
-        "on-click": "/home/kara/.config/waybar/wifi_menu.sh"
+        "on-click": "~/.config/waybar/wifi_menu.sh"
     },
     "pulseaudio": {
         // "scroll-step": 1, // %, can be a float
@@ -185,12 +185,12 @@
             "default": "🎜"
         },
         "escape": true,
-        "exec": "/home/kara/.config/waybar/mediaplayer.py 2> /dev/null"
-        // "exec": "$HOME/.config/waybar/mediaplayer.py --player spotify 2> /dev/null" // Filter player based on name
+        "exec": "~/.config/waybar/mediaplayer.py 2> /dev/null"
+        // "exec": "~/.config/waybar/mediaplayer.py --player spotify 2> /dev/null" // Filter player based on name
     },
     "custom/kblayout": {
         "format": "{}",
-        "exec": "/home/kara/.config/waybar/kblayout.sh",
+        "exec": "~/.config/waybar/kblayout.sh",
         "on-click": "swaymsg input type:keyboard xkb_switch_layout next",
         "tooltip": false
     },
@@ -218,6 +218,6 @@
     "custom/power": {
         "format": "⏻ ",
         "tooltip": false,
-        "on-click": "/home/kara/.config/waybar/power_menu.sh"
+        "on-click": "~/.config/waybar/power_menu.sh"
     }
 }

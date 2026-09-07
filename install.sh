@@ -29,15 +29,27 @@ die(){ echo -e "\033[1;31m[err]\033[0m $*"; exit 1; }
 if $DO_DEPS; then
   say "Installing deps from deps/pacman.txt ..."
   if command -v pacman &>/dev/null; then
-    pkgs=$(grep -v '^#' "$REPO/deps/pacman.txt" | grep -v '^$' | awk '{print $1}' | tr '\n' ' ')
+    # Official repo packages: stop at "# --- AUR" marker, ignore comments/empty
+    pkgs=$(awk '/^# --- AUR/{exit} !/^#/ && !/^$/ {print $1}' "$REPO/deps/pacman.txt" | tr '\n' ' ')
     say "pacman -S --needed $pkgs"
-    sudo pacman -S --needed $pkgs
-    # AUR pkgs
-    if grep -q "swayfx-git" "$REPO/deps/pacman.txt" && command -v yay &>/dev/null; then
-      yay -S --needed swayfx-git scenefx-git || true
+    # --needed avoids reinstall, continue on missing pkg (e.g. bibata name varies)
+    sudo pacman -S --needed $pkgs || warn "Some pacman packages missing — check deps/pacman.txt for name variants"
+    # AUR helper (yay or paru) for swayfx
+    aur_helper=""
+    if command -v yay &>/dev/null; then aur_helper="yay"
+    elif command -v paru &>/dev/null; then aur_helper="paru"
     fi
+    if [[ -n "$aur_helper" ]]; then
+      say "AUR ($aur_helper): swayfx-git scenefx-git"
+      $aur_helper -S --needed --noconfirm swayfx-git scenefx-git || warn "AUR install failed — install manually: $aur_helper -S swayfx-git scenefx-git"
+    else
+      warn "No AUR helper (yay/paru) found — manually install swayfx-git + scenefx-git from AUR"
+      warn "  git clone https://aur.archlinux.org/yay.git && cd yay && makepkg -si"
+    fi
+    # Fonts cache
+    fc-cache -f 2>/dev/null || true
   else
-    warn "pacman not found, skipping deps"
+    warn "pacman not found (non-Arch?) — skipping deps, install manually from deps/pacman.txt"
   fi
 fi
 
