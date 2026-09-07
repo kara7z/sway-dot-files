@@ -3,44 +3,68 @@
 # AUR helper: yay or paru required for swayfx/scenefx
 
 # --- Official repo (pacman) ---
-awww
-blueman
-brightnessctl
-grim
-kitty
-nautilus
-nwg-displays
-playerctl
+# Core SwayFX / WM (swayfx provided by AUR, see below)
 swaybg
 swayidle
 swaylock
-swaync
+# Bar + notifications
 waybar
-waypaper
-wl-mirror
-wmenu
+swaync
+# Launcher + wallpaper
 wofi
+wmenu
+awww
+waypaper
+nwg-displays
+# Terminal + files + browser
+kitty
+nautilus
+firefox
+# Audio / brightness / media
 pavucontrol
 pipewire-pulse
+pipewire-jack
+pipewire-alsa
+wireplumber
+playerctl
+brightnessctl
+mpd
+mpc
+# System / network / bluetooth
+blueman
+bluez
+bluez-utils
 networkmanager
 network-manager-applet
-python-gobject
-python
-jq
-wl-clipboard
-libnotify
 power-profiles-daemon
-slurp
-swappy
 polkit
 xdg-desktop-portal-wlr
+xdg-desktop-portal-gtk
+# Screenshots
+grim
+slurp
+swappy
+wl-mirror
+jq
+wl-clipboard
+# Python / libs for waybar scripts
+python
+python-gobject
+python-pydbus
+gtk3
+libnotify
+# Fonts + cursor (required for waybar/style.css + sway cursor)
 ttf-firacode-nerd
-ttf-font-awesome
 otf-font-awesome
-bibata-cursor-theme
 noto-fonts
 noto-fonts-emoji
+# Utils used by sway scripts (swaymsg, notify, jq already)
+procps-ng
+psmisc
+qt6ct
 
 # --- AUR (yay/paru) ---
-# scenefx-git
-# swayfx-git
+scenefx-git
+swayfx-git
+bibata-cursor-theme
+ttf-font-awesome

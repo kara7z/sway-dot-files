@@ -29,22 +29,28 @@ die(){ echo -e "\033[1;31m[err]\033[0m $*"; exit 1; }
 if $DO_DEPS; then
   say "Installing deps from deps/pacman.txt ..."
   if command -v pacman &>/dev/null; then
-    # Official repo packages: stop at "# --- AUR" marker, ignore comments/empty
+    # Official repo packages: until "# --- AUR" marker
     pkgs=$(awk '/^# --- AUR/{exit} !/^#/ && !/^$/ {print $1}' "$REPO/deps/pacman.txt" | tr '\n' ' ')
     say "pacman -S --needed $pkgs"
-    # --needed avoids reinstall, continue on missing pkg (e.g. bibata name varies)
-    sudo pacman -S --needed $pkgs || warn "Some pacman packages missing — check deps/pacman.txt for name variants"
-    # AUR helper (yay or paru) for swayfx
-    aur_helper=""
-    if command -v yay &>/dev/null; then aur_helper="yay"
-    elif command -v paru &>/dev/null; then aur_helper="paru"
+    # Use sudo non-interactive; fallback to warn if sudo/pacman fails (e.g. name variant)
+    if ! sudo -n pacman -S --needed --noconfirm $pkgs 2>&1 | tail -n 20; then
+      say "Retrying with --needed (may need password)..."
+      sudo pacman -S --needed $pkgs || warn "Some pacman packages missing — check deps/pacman.txt for name variants"
     fi
-    if [[ -n "$aur_helper" ]]; then
-      say "AUR ($aur_helper): swayfx-git scenefx-git"
-      $aur_helper -S --needed --noconfirm swayfx-git scenefx-git || warn "AUR install failed — install manually: $aur_helper -S swayfx-git scenefx-git"
-    else
-      warn "No AUR helper (yay/paru) found — manually install swayfx-git + scenefx-git from AUR"
-      warn "  git clone https://aur.archlinux.org/yay.git && cd yay && makepkg -si"
+    # AUR packages: after marker
+    aur_pkgs=$(awk 'found && !/^#/ && !/^$/ {print $1} /^# --- AUR/{found=1}' "$REPO/deps/pacman.txt" | tr '\n' ' ')
+    if [[ -n "$aur_pkgs" ]]; then
+      aur_helper=""
+      if command -v yay &>/dev/null; then aur_helper="yay"
+      elif command -v paru &>/dev/null; then aur_helper="paru"
+      fi
+      if [[ -n "$aur_helper" ]]; then
+        say "AUR ($aur_helper): $aur_pkgs"
+        $aur_helper -S --needed --noconfirm $aur_pkgs || warn "AUR install failed — try manually: $aur_helper -S $aur_pkgs"
+      else
+        warn "No AUR helper (yay/paru) found — manually install AUR pkgs: $aur_pkgs"
+        warn "  git clone https://aur.archlinux.org/yay.git && cd yay && makepkg -si"
+      fi
     fi
     # Fonts cache
     fc-cache -f 2>/dev/null || true
