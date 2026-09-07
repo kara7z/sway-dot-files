@@ -1,5 +1,5 @@
 #!/bin/sh
-# Portable — uses $HOME instead of hardcoded /home/kara
+# Portable — uses $HOME (no hardcoded user path)
 WOFI_STYLE="${XDG_CONFIG_HOME:-$HOME/.config}/wofi/power.css"
 WIFI_PASS_SCRIPT="${XDG_CONFIG_HOME:-$HOME/.config}/waybar/wifi_pass.py"
 # Fallback if waybar is at ~/.config/waybar (repo layout)
