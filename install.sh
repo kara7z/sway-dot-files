@@ -29,24 +29,34 @@ die(){ echo -e "\033[1;31m[err]\033[0m $*"; exit 1; }
 if $DO_DEPS; then
   say "Installing deps from deps/pacman.txt ..."
   if command -v pacman &>/dev/null; then
-    # Official repo packages: until "# --- AUR" marker
-    pkgs=$(awk '/^# --- AUR/{exit} !/^#/ && !/^$/ {print $1}' "$REPO/deps/pacman.txt" | tr '\n' ' ')
-    say "pacman -S --needed $pkgs"
-    # Use sudo non-interactive; fallback to warn if sudo/pacman fails (e.g. name variant)
-    if ! sudo -n pacman -S --needed --noconfirm $pkgs 2>&1 | tail -n 20; then
-      say "Retrying with --needed (may need password)..."
-      sudo pacman -S --needed $pkgs || warn "Some pacman packages missing — check deps/pacman.txt for name variants"
-    fi
-    # AUR packages: after marker
+    # Official repo packages: until "# --- AUR" marker — install one-by-one to skip missing (CachyOS vs Arch)
+    pkgs=$(awk '/^# --- AUR/{exit} !/^#/ && !/^$/ {print $1}' "$REPO/deps/pacman.txt")
+    say "pacman official: $pkgs"
+    for pkg in $pkgs; do
+      if pacman -Si "$pkg" >/dev/null 2>&1; then
+        echo " → pacman -S $pkg"
+        sudo pacman -S --needed --noconfirm "$pkg" 2>&1 | tail -n 5 || warn "Failed $pkg"
+      else
+        warn "Not in official repo (maybe AUR/CachyOS): $pkg — will try AUR"
+        # defer to AUR handling below; collect for later
+        aur_fallback="$aur_fallback $pkg"
+      fi
+    done
+    # AUR packages: after marker + any official fallback
     aur_pkgs=$(awk 'found && !/^#/ && !/^$/ {print $1} /^# --- AUR/{found=1}' "$REPO/deps/pacman.txt" | tr '\n' ' ')
-    if [[ -n "$aur_pkgs" ]]; then
+    aur_pkgs="$aur_pkgs $aur_fallback"
+    # trim
+    aur_pkgs=$(echo "$aur_pkgs" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' ')
+    if [[ -n "${aur_pkgs// /}" ]]; then
       aur_helper=""
       if command -v yay &>/dev/null; then aur_helper="yay"
       elif command -v paru &>/dev/null; then aur_helper="paru"
       fi
       if [[ -n "$aur_helper" ]]; then
         say "AUR ($aur_helper): $aur_pkgs"
-        $aur_helper -S --needed --noconfirm $aur_pkgs || warn "AUR install failed — try manually: $aur_helper -S $aur_pkgs"
+        for apkg in $aur_pkgs; do
+          $aur_helper -S --needed --noconfirm "$apkg" 2>&1 | tail -n 5 || warn "AUR $apkg failed — try: $aur_helper -S $apkg"
+        done
       else
         warn "No AUR helper (yay/paru) found — manually install AUR pkgs: $aur_pkgs"
         warn "  git clone https://aur.archlinux.org/yay.git && cd yay && makepkg -si"
