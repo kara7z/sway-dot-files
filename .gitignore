@@ -1,0 +1,13 @@
+# sway-dot-files — ignore local / generated
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+*.bak.*
+*.bak
+sway/outputs
+!sway/outputs.example
+waybar/config.json
+/tmp/
+*.log
+.sway-*

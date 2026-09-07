@@ -1,0 +1,37 @@
+#!/bin/bash
+# Toggle between 4K Mirror and Extended, with waybar handling
+set -e
+HDMI_X=$(swaymsg -t get_outputs 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(next(o['rect']['x'] for o in d if o['name']=='HDMI-A-1'))")
+HDMI_SCALE=$(swaymsg -t get_outputs 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(next(o['scale'] for o in d if o['name']=='HDMI-A-1'))")
+
+restart_waybar() {
+  pkill waybar 2>/dev/null || true
+  sleep 0.3
+  waybar >/dev/null 2>&1 &
+  disown
+}
+
+if [ "$HDMI_X" = "0" ] && [ "$HDMI_SCALE" = "2.0" ]; then
+  echo "Switching to EXTENDED 4K"
+  swaymsg output HDMI-A-1 scale 1.0 mode 3840x2160@60Hz pos 1920 0
+  swaymsg output eDP-1 scale 1.0 mode 1920x1080@60Hz pos 0 0
+  restart_waybar
+  notify-send -t 2000 "Display: Extended 4K" "eDP 1080p | HDMI 4K @ 60Hz — waybar on both" 2>/dev/null || true
+else
+  echo "Switching to MIRROR 4K"
+  # Mirror at 4K physical but 1080p logical (scale 2.0) — waybar will be 2x tall on HDMI
+  # For perfect waybar, alternative is 1080p mirror: uncomment next 2 lines and comment 4K lines
+  # swaymsg output HDMI-A-1 mode 1920x1080@60Hz scale 1.0 pos 0 0
+  swaymsg output HDMI-A-1 mode 3840x2160@60Hz scale 2.0 pos 0 0 || swaymsg output HDMI-A-1 mode 3840x2160@30Hz scale 2.0 pos 0 0
+  swaymsg output eDP-1 scale 1.0 mode 1920x1080@60Hz pos 0 0
+  restart_waybar
+  notify-send -t 2000 "Display: Mirror 4K" "Both 1920x1080 logical, HDMI 3840x2160 physical — waybar restarts" 2>/dev/null || true
+fi
+
+sleep 0.5
+swaymsg -t get_outputs | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+for o in d:
+    print(f\"{o['name']}: {o['current_mode']['width']}x{o['current_mode']['height']}@{o['current_mode']['refresh']} scale={o['scale']} pos {o['rect']['x']},{o['rect']['y']}\")
+"

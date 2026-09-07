@@ -1,0 +1,18 @@
+#!/bin/bash
+
+current=$(swaymsg -t get_workspaces | jq -r '.[] | select(.focused).num')
+
+case "$1" in
+next)
+  if [ "$current" -lt 10 ]; then
+    next=$((current + 1))
+    swaymsg workspace number "$next"
+  fi
+  ;;
+prev)
+  if [ "$current" -gt 1 ]; then
+    prev=$((current - 1))
+    swaymsg workspace number "$prev"
+  fi
+  ;;
+esac

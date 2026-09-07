@@ -1,0 +1,205 @@
+/* swaync style - matched to ~/.config/sway/config + animation right->left like swayfx */
+:root {
+  --cc-bg: rgba(0, 0, 0, 0.85);
+  --noti-border-color: #2266cc;
+  --noti-bg: 0, 0, 0;
+  --noti-bg-alpha: 1.0;
+  --noti-bg-darker: rgb(0, 0, 0);
+  --noti-bg-hover: rgb(20, 20, 20);
+  --noti-bg-focus: rgba(34, 102, 204, 0.3);
+  --noti-close-bg: rgb(51, 51, 51);
+  --noti-close-bg-hover: rgb(255, 0, 0);
+  --text-color: rgb(255, 255, 255);
+  --text-color-disabled: rgb(136, 136, 136);
+  --bg-selected: rgb(34, 102, 204);
+  --notification-icon-size: 48px;
+  --notification-app-icon-size: 16px;
+  --notification-group-icon-size: 32px;
+  --border: 1px solid var(--noti-border-color);
+  --border-radius: 0px;
+  --notification-shadow: 0 1px 3px rgba(0,0,0,0.8);
+  --font-size-body: 12px;
+  --font-size-summary: 13px;
+  --hover-tranistion: background 0.15s ease-in-out;
+  --group-collapse-tranistion: opacity 400ms ease-in-out;
+  --hover-transition: var(--hover-tranistion);
+  --group-collapse-transition: var(--group-collapse-tranistion);
+}
+
+/* sway palette fallbacks */
+@define-color cc-bg rgba(0, 0, 0, 0.85);
+@define-color noti-border-color #2266cc;
+@define-color noti-bg rgb(0, 0, 0);
+@define-color noti-bg-opaque rgb(0, 0, 0);
+@define-color noti-bg-darker rgb(0, 0, 0);
+@define-color noti-bg-hover rgb(20, 20, 20);
+@define-color noti-bg-hover-opaque rgb(20, 20, 20);
+@define-color noti-bg-focus rgba(34, 102, 204, 0.3);
+@define-color noti-close-bg rgb(51, 51, 51);
+@define-color noti-close-bg-hover rgb(255, 0, 0);
+@define-color text-color rgb(255, 255, 255);
+@define-color text-color-disabled rgb(136, 136, 136);
+@define-color bg-selected rgb(34, 102, 204);
+
+* {
+  font-family: monospace;
+}
+
+/* === Animation: slide from right to left like sway workspace switch === */
+/* SwayFX: animation_duration_ms 250 (sway:33) - using px to avoid GTK % error and negative width warnings */
+@keyframes slideInRight {
+  0% { transform: translateX(420px); opacity: 0; }
+  100% { transform: translateX(0); opacity: 1; }
+}
+@keyframes slideOutRight {
+  0% { transform: translateX(0); opacity: 1; }
+  100% { transform: translateX(420px); opacity: 0; }
+}
+
+.notification-row {
+  background: none;
+  outline: none;
+  animation: slideInRight 250ms cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards;
+}
+
+.notification-row.closing,
+.notification-row.dismissed {
+  animation: slideOutRight 250ms cubic-bezier(0.55, 0.06, 0.68, 0.19) forwards;
+}
+
+.notification-row:focus {
+  background: var(--noti-bg-focus);
+}
+
+.notification-row .notification-background {
+  padding: 6px 12px;
+}
+
+.notification-row .notification-background .notification {
+  border-radius: var(--border-radius);
+  border: var(--border);
+  padding: 0;
+  transition: background 0.15s ease-in-out, border-color 0.15s ease-in-out;
+  background: rgb(var(--noti-bg));
+  box-shadow: var(--notification-shadow);
+}
+
+.notification-row .notification-background .notification.low {
+  border-color: #333333;
+}
+.notification-row .notification-background .notification.low .summary,
+.notification-row .notification-background .notification.low .body {
+  color: #888888;
+}
+
+.notification-row .notification-background .notification.normal {
+  border-color: #2266cc;
+}
+
+.notification-row .notification-background .notification.critical {
+  border-color: #ff0000;
+  background: #ff0000;
+}
+.notification-row .notification-background .notification.critical .summary,
+.notification-row .notification-background .notification.critical .body,
+.notification-row .notification-background .notification.critical .time {
+  color: #ffffff;
+}
+
+.notification-row .notification-background .notification .notification-default-action {
+  padding: 10px;
+  margin: 0;
+  box-shadow: none;
+  background: transparent;
+  border: none;
+  color: var(--text-color);
+  border-radius: var(--border-radius);
+}
+
+.notification-row .notification-background .notification .notification-default-action:hover {
+  background: var(--noti-bg-hover);
+}
+
+.notification-row .notification-background .notification .notification-default-action .notification-content {
+  background: transparent;
+  padding: 0;
+}
+
+.notification-row .notification-background .notification .notification-default-action .notification-content .image {
+  -gtk-icon-size: var(--notification-icon-size);
+  border-radius: 0px;
+  margin: 4px;
+}
+
+.notification-row .notification-background .notification .notification-default-action .notification-content .app-icon {
+  -gtk-icon-size: var(--notification-app-icon-size);
+  -gtk-icon-shadow: 0 1px 2px black;
+  margin: 6px;
+}
+
+.notification-row .notification-background .notification .notification-default-action .notification-content .text-box .summary {
+  font-size: var(--font-size-summary);
+  font-weight: bold;
+  color: var(--text-color);
+}
+
+.notification-row .notification-background .notification .notification-default-action .notification-content .text-box .time {
+  font-size: 11px;
+  color: var(--text-color-disabled);
+  margin-right: 30px;
+}
+
+.notification-row .notification-background .notification .notification-default-action .notification-content .text-box .body {
+  font-size: var(--font-size-body);
+  color: var(--text-color);
+}
+
+.notification-row .notification-background .notification .notification-default-action .notification-content progressbar {
+  margin-top: 6px;
+}
+.notification-row .notification-background .notification .notification-default-action .notification-content progressbar progress {
+  background: #2266cc;
+}
+
+.close-button {
+  background: var(--noti-close-bg);
+  color: var(--text-color);
+  padding: 0;
+  border-radius: 0px;
+  margin-top: 8px;
+  margin-right: 8px;
+  min-width: 24px;
+  min-height: 24px;
+  border: 1px solid #333333;
+}
+.close-button:hover {
+  background: var(--noti-close-bg-hover);
+  border-color: #ff0000;
+}
+
+.floating-notifications {
+  background: transparent;
+}
+.floating-notifications .notification {
+  box-shadow: 0 2px 8px rgba(0,0,0,0.8);
+}
+
+/* Control center - also matched to sway dark */
+.control-center {
+  background: rgba(0,0,0,0.95);
+  color: var(--text-color);
+  border-radius: 0px;
+  border: 1px solid #2266cc;
+}
+.control-center .control-center-list .notification {
+  box-shadow: none;
+  border: 1px solid #333333;
+}
+.control-center .control-center-list .notification:hover {
+  border-color: #2266cc;
+}
+
+/* Widgets */
+.widget-title > label { font-size: 1.2rem; }
+.widget-dnd label { color: var(--text-color); }
+.blank-window { background: transparent; }
