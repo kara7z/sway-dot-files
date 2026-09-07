@@ -3,9 +3,12 @@
 # Usage:
 #   ./install.sh --check        # dry-run, show what would be linked
 #   ./install.sh                # copy files (default, safe)
+#   ./install.sh --all          # ONE COMMAND: install deps + dotfiles (recommended for new device)
 #   ./install.sh --stow         # use GNU stow (symlinks)
 #   ./install.sh --copy         # force copy
 #   ./install.sh --deps         # install pacman deps from deps/pacman.txt
+# One-liner for new device:
+#   git clone https://github.com/kara7z/sway-dot-files.git && cd sway-dot-files && ./install.sh --all
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
@@ -14,11 +17,19 @@ DO_DEPS=false
 
 for arg in "$@"; do
   case "$arg" in
+    --all) MODE="copy"; DO_DEPS=true ;;
     --stow) MODE="stow" ;;
     --copy) MODE="copy" ;;
-    --deps) DO_DEPS=true ;;
+    --deps) DO_DEPS=true; MODE="deps-only" ;;
     --check) MODE="check" ;;
-    -h|--help) echo "Usage: $0 [--stow|--copy|--check] [--deps]"; exit 0 ;;
+    -h|--help)
+      echo "Usage: $0 [--all|--stow|--copy|--check] [--deps]"
+      echo "  --all   One command: deps + dotfiles (new device)"
+      echo "  --deps  Only deps"
+      echo "  --copy  Only dotfiles (default)"
+      echo "  --check Dry-run"
+      exit 0
+      ;;
   esac
 done
 
@@ -29,6 +40,7 @@ die(){ echo -e "\033[1;31m[err]\033[0m $*"; exit 1; }
 if $DO_DEPS; then
   say "Installing deps from deps/pacman.txt ..."
   if command -v pacman &>/dev/null; then
+    aur_fallback=""
     # Official repo packages: until "# --- AUR" marker — install one-by-one to skip missing (CachyOS vs Arch)
     pkgs=$(awk '/^# --- AUR/{exit} !/^#/ && !/^$/ {print $1}' "$REPO/deps/pacman.txt")
     say "pacman official: $pkgs"
@@ -124,7 +136,11 @@ check_mode(){
   echo "Run without --check to apply."
 }
 
-if [[ "$MODE" == "check" ]]; then
+if [[ "$MODE" == "deps-only" ]]; then
+  say "Deps installed — skipping dotfiles (use --all for full install)"
+  say "Done. Validate with: sway -c ~/.config/sway/config --validate"
+  exit 0
+elif [[ "$MODE" == "check" ]]; then
   check_mode; exit 0
 elif [[ "$MODE" == "stow" ]]; then
   install_stow

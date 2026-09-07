@@ -47,25 +47,26 @@ sway-dot-files/
 └── install.sh
 ```
 
-## Quick Install
+## Quick Install — One Command (new device)
 
 ```sh
-git clone https://github.com/kara7z/sway-dot-files.git
-cd sway-dot-files
-
-# dry run
-./install.sh --check
-
-# install deps
-./install.sh --deps
-
-# copy configs (backs up existing to *.bak.*)
-./install.sh
-
+git clone https://github.com/kara7z/sway-dot-files.git && cd sway-dot-files && ./install.sh --all
+# --all = deps (49 pacman + 4 AUR) + dotfiles in one go
 # then reload
-swaymsg reload
-sway -c ~/.config/sway/config --validate
-pkill waybar; waybar &
+swaymsg reload && waybar --version
+```
+
+**Other modes:**
+```sh
+./install.sh --check   # dry-run
+./install.sh --deps    # deps only
+./install.sh --copy    # dotfiles only (default, backs up to *.bak.*)
+./install.sh           # same as --copy
+```
+
+**One-liner without git (curl):**
+```sh
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/kara7z/sway-dot-files/main/install.sh)" -- --all
 ```
 
 **Outputs:** `sway/outputs.example` is sanitized — copy to `~/.config/sway/outputs` and edit `pos/mode/scale` via `nwg-displays` or manually.
