@@ -35,10 +35,9 @@
 | `XF86AudioStop:262` | `playerctl stop` | playerctl |
 | `XF86MonBrightnessDown:265` | `brightnessctl set 5%-` | brightnessctl |
 | `XF86MonBrightnessUp:266` | `brightnessctl set 5%+` | brightnessctl |
-| `$mod+p / Shift+p:269` | `~/.local/bin/sway-display-toggle` | custom script |
-| `$mod+m / Shift+m:271` | `~/.local/bin/sway-wl-mirror-toggle` | custom |
-| `XF86Display:274` | `sway-wl-mirror-toggle` |  |
-| `XF86DisplayToggle:275` | `sway-wl-mirror-toggle` |  |
+| `$mod+p:271` | `~/.local/bin/sway-display-toggle` — duplicate (mirror) the main screen on the external | custom script |
+| `XF86Display:276` | `sway-display-toggle` (same duplicate toggle) |  |
+| `XF86DisplayToggle:277` | `sway-display-toggle` (same duplicate toggle) |  |
 | `XF86Fn_F6/8:276` | `nwg-displays` |  |
 | `Print:280` | `grim` | grim |
 | `swipe:3:left:100` | `~/.local/bin/workspace-swipe next` | custom |
@@ -56,10 +55,11 @@
 ### Scripts in `scripts/`
 | Script | Purpose |
 |--------|---------|
-| `sway-display-toggle` | toggle 4K mirror (scale 2.0) vs extended (HDMI 3840x2160 pos 1920) + waybar restart + notify |
-| `sway-wl-mirror-toggle` | `wl-mirror --scaling nearest --fullscreen-output HDMI-A-1 eDP-1` 4K sharp mirror |
-| `sway-mirror-1080p` | mirror 1080p (downscale, perfect waybar) |
+| `sway-display-toggle` | `$mod+p` duplicate: hardware clone when the external advertises the laptop's mode, otherwise `wl-mirror` fullscreen on it; first working backend wins (`extcopy-shm` -> `screencopy-shm` -> `auto` — SHM is required while eDP-1 is 10-bit, `render_bit_depth 10` breaks the DMA-BUF/GL capture); stops/restarts way-displays as needed; notify |
+| `sway-wl-mirror-toggle` | legacy alias -> `sway-display-toggle --software-only` |
+| `sway-mirror-1080p` | legacy alias -> `sway-display-toggle --software-only` (eDP-1 exposes no 1080p mode, so a real 1080p clone is impossible) |
 | `workspace-swipe` | `current=$(swaymsg -t get_workspaces | jq ...)`, +1/-1 |
+| `sway-battery-notify` | warn once at 15%, critical (sticky, repeat 2min) at 5% while Discharging — autostarted from `sway/config` |
 | `sway/scripts/workspace-fade.sh` | fake fade `dpms off / workspace N / dpms on` |
 | `sway/status.sh` | legacy swaybar JSON (wifi `nmcli`, vol `pactl`, bat `/sys/.../BAT0`) — **inactive**, uses waybar now |
 | `sway/wifi-menu.sh` | `nmcli rescan | wofi` — legacy, replaced by `waybar/wifi_menu.sh` |

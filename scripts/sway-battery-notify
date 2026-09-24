@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# sway-battery-notify — low/critical battery warnings via notify-send (shown by swaync)
+#   WARN (default 15%): one notification per discharge cycle
+#   CRIT (default  5%): persistent critical notification, repeated every 2 min
+# Only notifies while Discharging; state resets when charger is plugged in.
+# Env overrides (for testing/tuning): WARN_LEVEL, CRIT_LEVEL, INTERVAL,
+#   CRIT_REPEAT, BAT_PATH, STATE_FILE
+set -u
+
+WARN_LEVEL="${WARN_LEVEL:-15}"
+CRIT_LEVEL="${CRIT_LEVEL:-5}"
+INTERVAL="${INTERVAL:-60}"
+CRIT_REPEAT="${CRIT_REPEAT:-120}"
+
+if [[ -z "${BAT_PATH:-}" ]]; then
+  if [[ -d /sys/class/power_supply/BAT0 ]]; then
+    BAT_PATH=/sys/class/power_supply/BAT0
+  else
+    BAT_PATH=$(ls -d /sys/class/power_supply/BAT* 2>/dev/null | head -n1)
+  fi
+fi
+# No battery (desktop/VM) — nothing to do
+[[ -n "${BAT_PATH:-}" && -d "$BAT_PATH" ]] || exit 0
+
+STATE_FILE="${STATE_FILE:-${XDG_RUNTIME_DIR:-/tmp}/sway-battery-notify.state}"
+LOCK_FILE="${XDG_RUNTIME_DIR:-/tmp}/sway-battery-notify.lock"
+
+# Single instance per user session
+exec 9>"$LOCK_FILE"
+flock -n 9 || exit 0
+
+warned=false
+crit_at=0
+[[ -f "$STATE_FILE" ]] && source "$STATE_FILE" 2>/dev/null || true
+save_state() { printf 'warned=%s\ncrit_at=%s\n' "$warned" "$crit_at" > "$STATE_FILE"; }
+
+while true; do
+  cap=$(cat "$BAT_PATH/capacity" 2>/dev/null || echo "")
+  st=$(cat "$BAT_PATH/status" 2>/dev/null || echo "")
+  now=$(date +%s)
+
+  if [[ "$cap" =~ ^[0-9]+$ ]]; then
+    if [[ "$st" == "Discharging" ]]; then
+      if (( cap <= CRIT_LEVEL )); then
+        if (( now - crit_at >= CRIT_REPEAT )); then
+          notify-send -u critical -t 0 -a "Battery" \
+            "Battery critical: ${cap}% remaining" \
+            "Plug in NOW — the system may suspend or shut down." 2>/dev/null || true
+          crit_at=$now; warned=true; save_state
+        fi
+      elif (( cap <= WARN_LEVEL )) && [[ "$warned" != true ]]; then
+        notify-send -u normal -t 10000 -a "Battery" \
+          "Battery low: ${cap}% remaining" \
+          "Plug in the charger soon." 2>/dev/null || true
+        warned=true; save_state
+      fi
+    elif [[ "$warned" == true || "$crit_at" != 0 ]]; then
+      # Charging / Full / Not charging — reset for the next discharge cycle
+      warned=false; crit_at=0; save_state
+    fi
+  fi
+  sleep "$INTERVAL"
+done

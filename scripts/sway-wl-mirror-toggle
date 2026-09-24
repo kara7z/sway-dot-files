@@ -1,21 +1,6 @@
 #!/bin/bash
-if pgrep -x wl-mirror >/dev/null; then
-  echo "Stopping wl-mirror..."
-  pkill wl-mirror
-  notify-send -t 2000 "Mirror: OFF" "Extended 4K" 2>/dev/null || echo "OFF"
-  pkill waybar; sleep 0.3; waybar >/dev/null 2>&1 & disown
-  exit 0
-fi
-echo "Starting 4K mirror (HDMI 3840x2160 + sharp 2x upscale)..."
-swaymsg output HDMI-A-1 mode 3840x2160@60Hz scale 1.0 pos 1920 0 >/dev/null
-swaymsg output eDP-1 mode 1920x1080@60Hz scale 1.0 pos 0 0 >/dev/null
-pkill waybar; sleep 0.3; waybar >/dev/null 2>&1 & disown
-# nearest+exact = pixel-perfect 2x for 1080p->4K (sharp), use 'fit' for blurry linear
-nohup wl-mirror --backend screencopy --scaling nearest --scaling exact --fullscreen-output HDMI-A-1 eDP-1 >/tmp/wl-mirror.log 2>&1 &
-sleep 0.8
-if pgrep -x wl-mirror >/dev/null; then
-  notify-send -t 2000 "Mirror: ON 4K" "HDMI 3840x2160 @60, eDP 1080p 2x sharp" 2>/dev/null || echo "ON 4K"
-else
-  cat /tmp/wl-mirror.log
-  notify-send "Mirror failed" "check log" 2>/dev/null || true
-fi
+# Legacy alias (kept so old binds/notes keep working): software duplicate of the
+# main screen on the connected external = `sway-display-toggle --software-only`.
+# The real logic lives in sway-display-toggle, including the 2026-09-24 SHM
+# backend fix for the 10-bit eDP-1 framebuffer (DMA-BUF/GL import fails there).
+exec ~/.local/bin/sway-display-toggle --software-only "$@"

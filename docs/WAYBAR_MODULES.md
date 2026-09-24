@@ -1,6 +1,7 @@
 # Waybar Modules — Config & Styling
 
-Source: `waybar/config:223` + `waybar/style.css:439` — Waybar `0.15.0`
+Source: `waybar/config` + `waybar/style.css:439` — Waybar `0.15.0`
+(module audit + kblayout rewrite: 2026-09-24)
 
 ## Layout
 
@@ -8,9 +9,10 @@ Source: `waybar/config:223` + `waybar/style.css:439` — Waybar `0.15.0`
 // waybar/config:9
 modules-left:   ["sway/workspaces", "sway/mode", "sway/scratchpad"]
 modules-center: ["clock"]
-modules-right:  ["custom/notification", "tray", "mpd", "pulseaudio",
+modules-right:  ["custom/notification", "tray", "pulseaudio",
                 "custom/kblayout", "network", "power-profiles-daemon",
                 "backlight", "battery", "custom/power"]
+// mpd removed 2026-09-24 — no MPD server on this box, it only rendered "Disconnected ⓘ"
 ```
 
 Global: `height 30:3`, `spacing 4:7`
@@ -41,7 +43,8 @@ Global: `height 30:3`, `spacing 4:7`
 ### tray `waybar/config:87`
 - `spacing 10:89` — `.passive dim:273`, `.needs-attention bg #eb4d4b:277`
 
-### mpd `waybar/config:54`
+### mpd `waybar/config:54` — DISABLED 2026-09-24 (no MPD server on this box)
+- Not in `modules-right`: `~/.config/mpd` is missing and `mpd.service` is disabled, so the module only ever rendered `Disconnected ⓘ`. Re-add `"mpd",` to `modules-right` after setting MPD up.
 - Interval 5s:59, format `stateIcon + artist - album - title (elapsed/total) ⸨pos|len⸩ vol% :55`
 - Styling `291` `bg #66cc99` `color #2a5c45`, disconnected red `#f53c3c:296`, stopped `#90b1b1`, paused `#51a37a`
 
@@ -50,14 +53,14 @@ Global: `height 30:3`, `spacing 4:7`
 - Icons `168`: `default ["","",""]`, `headphone "":169`, etc.
 - Styling `224`: muted `bg #90b1b1 color #2a5c45:232`
 
-### custom/kblayout `waybar/config:191`
-- Exec `/config/waybar/kblayout.sh:193` polls `swaymsg -t get_inputs`, `format "{}":192`, click `xkb_switch_layout next:194` — style `361` `border-left white 1px`
+### custom/kblayout `waybar/config:191` — script rewritten 2026-09-24
+- Exec `/config/waybar/kblayout.sh:193`: `jq` poll every 0.25s (python3 at 0.1s measured 31ms/tick ≈ 30% of a CPU core; now 3.8ms/tick ≈ 1.5%), single-instance takeover via pidfile (`pkill waybar` can orphan the old copy), `format "{}":192`, click `xkb_switch_layout next:194` — style `361` `border-left white 1px`
 
 ### network `waybar/config:150`
 - Click `wifi_menu.sh:158`, wifi `"{essid} ({signal}%) {icon}":152`, icons `[""...]:153`, disconnected `"Disconnected ⚠":157`
 - Styling `209`: base `border-left/right white 1px:214`, disconnected `bg rgba(255,0,0,0.22):220`
 
-### power-profiles-daemon `139`
+### power-profiles-daemon `139` — verified working 2026-09-24 (D-Bus service `net.hadess.PowerProfiles`; its binary is not in `$PATH`, that is normal)
 - `format "{icon}":140`, icons `144`: `performance ""`, `balanced ""`, `power-saver ""` — hover `163` magenta `rgba(255,0,255,0.22)`
 
 ### backlight `115`
@@ -74,6 +77,7 @@ Global: `height 30:3`, `spacing 4:7`
 
 | Module | Lines | Format |
 |--------|-------|--------|
+| `mpd` | 54 | disabled 2026-09-24 — no MPD server on this box (`~/.config/mpd` missing, `mpd.service` disabled); re-add `"mpd",` to `modules-right` once MPD is set up |
 | `keyboard-state` | 35 | `"{name} {icon}"`, locked `:40` |
 | `idle_inhibitor` | 80 | `/` |
 | `cpu` | 100 | `"{usage}% ":101`, style `187` `bg #2ecc71` |
@@ -87,7 +91,7 @@ Global: `height 30:3`, `spacing 4:7`
 
 ## Scripts
 
-- `kblayout.sh:41` — poll `0.1s`, popup `wofi` 200×50 centered, auto-kill 1s
+- `kblayout.sh` — prints US/AR/FR (`jq` 0.25s poll, was `python3` @0.1s ≈ 30% of a CPU core), `wofi` popup 200×50 centered auto-killed after 1s, kills any previous instance on start
 - `wifi_menu.sh:122` — `nmcli` scan, dedup `awk !seen`, `wofi --style .../wofi/power.css`, branching Connect/Disconnect/Forget
 - `wifi_pass.py:106` — GTK3 dialog `300×100`, `rgba(0,0,0,0.85)`, entry invisible, Cancel/Connect
 - `power_menu.sh:12` — `printf "󰆑 Shutdown..." | wofi --conf .../wofi/power_config --style .../wofi/power.css`

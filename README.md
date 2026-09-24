@@ -21,7 +21,7 @@ sway-dot-files/
 ├── waybar/
 │   ├── config              # JSONC (// comments, Waybar supports JSONC)
 │   ├── style.css           # black/white + translucent overlays
-│   ├── kblayout.sh         # US/AR poll + wofi popup
+│   ├── kblayout.sh         # US/AR/FR poll (jq, 0.25s) + wofi popup
 │   ├── wifi_menu.sh        # nmcli + wofi + wifi_pass.py
 │   ├── wifi_pass.py        # GTK3 password dialog
 │   ├── power_menu.sh       # wofi power menu
@@ -34,9 +34,9 @@ sway-dot-files/
 │   ├── power.css           # rgba(0,0,0,0.6) border white, FiraCode 22px
 │   └── power_config        # width 250 height 300
 ├── scripts/
-│   ├── sway-display-toggle # 4K mirror vs extended
-│   ├── sway-wl-mirror-toggle # wl-mirror nearest 2x sharp
-│   ├── sway-mirror-1080p   # 1080p mirror (perfect waybar)
+│   ├── sway-display-toggle # $mod+p: duplicate screen on external (SHM wl-mirror)
+│   ├── sway-wl-mirror-toggle # legacy alias -> sway-display-toggle --software-only
+│   ├── sway-mirror-1080p   # legacy alias -> sway-display-toggle --software-only
 │   └── workspace-swipe     # 3-finger swipe
 ├── deps/pacman.txt         # pacman -Q list
 ├── docs/
@@ -100,7 +100,7 @@ sudo pacman -S stow
 | `Alt+r` | resize mode (h/j/k/l) | `227` |
 | `Super+space` | xkb switch US/AR | `132` |
 | `XF86Audio*` `XF86MonBrightness*` | pactl/playerctl/brightnessctl | `252/265` |
-| `Alt+p` / `Alt+m` | display/mirror toggle | `269/271` |
+| `Alt+p` (or `XF86Display`) | duplicate the main screen on the connected external (toggle) | `271/276` |
 | `Print` | grim | `280` |
 | `3-finger swipe` | workspace prev/next | `100` |
 
@@ -116,7 +116,7 @@ sudo pacman -S stow
 
 ## Waybar
 
-`docs/WAYBAR_MODULES.md`: left `workspaces/mode/scratchpad`, center `clock`, right `notification/tray/mpd/pulseaudio/kblayout/network/power-profiles/backlight/battery/power` — uses `custom/kblayout` (`kblayout.sh` `swaymsg get_inputs`), `network` (`wifi_menu.sh`), `pulseaudio` (`pavucontrol`).
+`docs/WAYBAR_MODULES.md`: left `workspaces/mode/scratchpad`, center `clock`, right `notification/tray/pulseaudio/kblayout/network/power-profiles/backlight/battery/power` — uses `custom/kblayout` (`kblayout.sh`, `jq` poll 0.25s), `network` (`wifi_menu.sh`), `pulseaudio` (`pavucontrol`); `mpd` is defined but disabled (no MPD server on this box).
 
 ## Fixes from Backup
 

@@ -1,7 +1,7 @@
 // -*- mode: jsonc -*-
 {
     // "layer": "top", // Waybar at top layer
-    // "position": "bottom", // Waybar position (top|bottom|left|right)
+    "position": "bottom", // Waybar position (top|bottom|left|right)
     "height": 30, // Waybar height (to be removed for auto height)
     // "width": 1280, // Waybar width
     "spacing": 4, // Gaps between modules (4px)
@@ -17,7 +17,8 @@
     "modules-right": [
         "custom/notification",
         "tray",
-        "mpd",
+        // "mpd", — disabled 2026-09-24: no MPD server on this box (~/.config/mpd missing,
+        //   mpd.service disabled), so the module only ever rendered "Disconnected ⓘ"
         "pulseaudio",
         "custom/kblayout",
         "network",
@@ -87,10 +88,15 @@
     "tray": {
         // "icon-size": 21,
         "spacing": 10,
-        // "icons": {
-        //   "blueman": "bluetooth",
-        //   "TelegramDesktop": "$HOME/.local/share/icons/hicolor/16x16/apps/telegram.png"
-        // }
+        // Discord's SNI item (Id: discord_status_icon_1) provides neither IconName
+        // nor IconPixmap → GTK logged "[error] Item '': No icon name or pixmap
+        // given." on every waybar start. Overriding the icon fixes that.
+        "icons": {
+            "discord_status_icon": "/usr/share/icons/hicolor/256x256/apps/discord.png",
+            "discord_status_icon_1": "/usr/share/icons/hicolor/256x256/apps/discord.png"
+            // "blueman": "bluetooth",  // format: "<id>": "<theme icon name or file path>"
+            // "TelegramDesktop": "$HOME/.local/share/icons/hicolor/16x16/apps/telegram.png"
+        }
     },
     "clock": {
         // "timezone": "America/New_York",

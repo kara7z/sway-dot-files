@@ -1,6 +1,6 @@
 #!/bin/bash
-# Mirror at 1080p — waybar perfect match (no scaling issue), HDMI downscaled
-swaymsg output HDMI-A-1 mode 1920x1080@60Hz scale 1.0 pos 0 0
-swaymsg output eDP-1 mode 1920x1080@60Hz scale 1.0 pos 0 0
-pkill waybar; sleep 0.3; waybar >/dev/null 2>&1 & disown
-notify-send "Mirror 1080p" "Perfect waybar, HDMI downscaled (TV upscales)" 2>/dev/null || echo "Mirror 1080p"
+# Legacy alias. The old "true clone at 1080p" is impossible on this panel:
+# eDP-1 only exposes 1920x1200@60 and @48, so a 1080p hardware clone would
+# downscale the laptop screen. It now behaves as the software duplicate:
+# `sway-display-toggle --software-only` (wl-mirror, SHM backend, fit scaling).
+exec ~/.local/bin/sway-display-toggle --software-only "$@"

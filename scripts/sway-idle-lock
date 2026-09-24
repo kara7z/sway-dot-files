@@ -1,0 +1,54 @@
+#!/bin/bash
+# sway-idle-lock — keeps exactly one swayidle running (idle lock + screen blank).
+#
+#   * lock the session after 5 min of inactivity: wallpaper lock screen + password prompt
+#   * blank all outputs after 10 min, wake them on activity
+#   * lock before suspend/sleep
+#
+# Called from sway config with `exec_always`, so a config reload (Alt+Shift+C)
+# restarts the timer with exactly one instance instead of stacking them.
+# Tune the numbers below (seconds). Set LOCK_WALLPAPER to force a fixed image.
+
+LOCK_TIMEOUT="${LOCK_TIMEOUT:-300}"
+BLANK_TIMEOUT="${BLANK_TIMEOUT:-600}"
+
+resolve_wallpaper() {
+  # 1. explicit override
+  if [ -n "${LOCK_WALLPAPER:-}" ] && [ -f "$LOCK_WALLPAPER" ]; then
+    printf '%s' "$LOCK_WALLPAPER"
+    return 0
+  fi
+  # 2. whatever awww is showing right now
+  img=$(awww query 2>/dev/null | grep -oE 'image: [^ ,]+' | head -1 | cut -d' ' -f2)
+  if [ -n "$img" ] && [ -f "$img" ]; then
+    printf '%s' "$img"
+    return 0
+  fi
+  # 3. waypaper's configured wallpaper
+  cfg="$HOME/.config/waypaper/config.ini"
+  if [ -f "$cfg" ]; then
+    w=$(grep -E '^[[:space:]]*wallpaper[[:space:]]*=' "$cfg" | head -1 | cut -d'=' -f2- | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    case "$w" in "~"/*) w="$HOME/${w#\~/}" ;; esac
+    if [ -n "$w" ] && [ -f "$w" ]; then
+      printf '%s' "$w"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+pkill -x swayidle 2>/dev/null && sleep 0.3
+
+if WALL=$(resolve_wallpaper); then
+  LOCK_CMD="swaylock -f -i \"$WALL\" -s fill"
+  echo "Lock screen image: $WALL"
+else
+  LOCK_CMD='swaylock -f -c 000000'
+  echo "No wallpaper found — black lock screen"
+fi
+
+exec swayidle -w \
+  timeout "$LOCK_TIMEOUT" "$LOCK_CMD" \
+  timeout "$BLANK_TIMEOUT" 'swaymsg "output * power off"' \
+  resume 'swaymsg "output * power on"' \
+  before-sleep "$LOCK_CMD"
