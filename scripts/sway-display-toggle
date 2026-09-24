@@ -216,6 +216,37 @@ mirror_off() {
     sleep 0.3
   fi
   stop_ws_guard
+  # Drop the dedicated mirror workspace when it is empty, so no stale
+  # "__mirror" button lingers in waybar's workspace list in extended mode.
+  # (If it holds user windows we leave it alone — it's a real workspace then.)
+  if [ -n "${MAIN:-}" ] && [ -n "${EXT:-}" ] && [ "$EXT" != "$MAIN" ]; then
+    MSTATE=$(swaymsg -t get_workspaces 2>/dev/null | python3 -c '
+import json, sys
+try:
+    ws = json.load(sys.stdin)
+except Exception:
+    print("unknown"); sys.exit()
+m = [w for w in ws if w.get("name") == "__mirror"]
+if not m:
+    print("absent")
+elif not m[0].get("nodes") and not m[0].get("floating_nodes"):
+    used = {w.get("name") for w in ws}
+    free = next((str(n) for n in range(1, 11) if str(n) not in used), "")
+    print("empty:" + free)
+else:
+    print("busy")
+')
+    case "$MSTATE" in
+      empty:*)
+        FREE="${MSTATE#empty:}"
+        if [ -n "$FREE" ]; then
+          swaymsg focus output "$EXT" >/dev/null 2>&1
+          swaymsg workspace number "$FREE" >/dev/null 2>&1
+          swaymsg focus output "$MAIN" >/dev/null 2>&1
+        fi
+        ;;
+    esac
+  fi
   mkdir -p "$(dirname "$FLAG")"
   touch "$FLAG"  # permanent auto-mirror stays off until next toggle-ON / login
   ensure_daemon

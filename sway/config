@@ -346,20 +346,11 @@ output eDP-1 scale_filter smart
 # --- Duplicate-mode workspace guard (fix: ws switching to EXT only) ---
 # wl-mirror copies MAIN's pixels but sway keeps one workspace per output, so a
 # fresh `workspace N` created while focused on EXT (or an N already living on
-# EXT) shows ONLY on the external. Pin 1-10 to the laptop panel so new
-# workspaces are born on MAIN; the wrapper (~/.local/bin/sway-workspace) +
+# EXT) shows ONLY on the external. The wrapper (~/.local/bin/sway-workspace) +
 # event daemon (sway-mirror-workspace-daemon) pull stray workspaces back to
-# MAIN and park the external on the dedicated __mirror workspace.
-workspace 1 output eDP-1
-workspace 2 output eDP-1
-workspace 3 output eDP-1
-workspace 4 output eDP-1
-workspace 5 output eDP-1
-workspace 6 output eDP-1
-workspace 7 output eDP-1
-workspace 8 output eDP-1
-workspace 9 output eDP-1
-workspace 10 output eDP-1
+# MAIN (eDP-*) and park the external on the dedicated __mirror workspace.
+# NOTE: no static `workspace N output ...` pinning here on purpose — it would
+# also force new workspaces onto the laptop in extended (non-mirror) mode.
 # wl-mirror window: no border, never auto-focuses away from MAIN content.
 for_window [app_id="at.yrlf.wl_mirror"] border none
 no_focus [app_id="at.yrlf.wl_mirror"]
