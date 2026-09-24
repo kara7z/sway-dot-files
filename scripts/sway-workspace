@@ -1,0 +1,175 @@
+#!/usr/bin/env python3
+"""sway-workspace — mirror-safe replacement for `swaymsg workspace ...`.
+
+Usage (drop-in for keybindings):
+    sway-workspace workspace number 5
+    sway-workspace workspace 3
+    sway-workspace workspace next|prev|back_and_forth|next_on_output|prev_on_output
+    sway-workspace move container to workspace number 5
+    sway-workspace <anything passed straight to swaymsg>
+
+Behaviour:
+- Extended mode (no wl-mirror): just `swaymsg <args>`, unchanged.
+- Mirror mode (wl-mirror running or hardware-clone): runs the request, then
+  pulls the affected workspace(s) back onto MAIN (eDP-*) so the duplicate
+  on the external never diverges:
+    * `workspace ...` switches -> `move workspace to output MAIN`, then
+      parks EXT back on __mirror and refocuses MAIN.
+    * `move ... to workspace ...` -> saves current ws, focuses the target,
+      pulls it to MAIN, parks EXT on __mirror, returns to saved ws.
+Waybar clicks / gestures that bypass keybindings are caught separately by
+sway-mirror-workspace-daemon; this wrapper makes keybindings instant.
+"""
+import json
+import os
+import subprocess
+import sys
+
+MIRROR_WS = os.environ.get("SWAY_MIRROR_WS", "__mirror")
+
+
+def run_swaymsg(*args):
+    return subprocess.run(["swaymsg"] + list(args),
+                          capture_output=True, text=True)
+
+
+def get_outputs():
+    try:
+        return json.loads(run_swaymsg("-t", "get_outputs").stdout)
+    except Exception:
+        return []
+
+
+def get_workspaces():
+    try:
+        return json.loads(run_swaymsg("-t", "get_workspaces").stdout)
+    except Exception:
+        return []
+
+
+def detect_main(outputs):
+    for o in outputs:
+        if o.get("name", "").startswith("eDP-") and o.get("active"):
+            return o["name"]
+    for o in outputs:
+        if o.get("active"):
+            return o["name"]
+    return ""
+
+
+def detect_ext(outputs, main):
+    for o in outputs:
+        if o.get("active") and o.get("name") != main:
+            return o["name"]
+    return ""
+
+
+def mirror_active(outputs, main, ext):
+    if subprocess.run(["pgrep", "-x", "wl-mirror"],
+                       capture_output=True).returncode == 0:
+        return True
+    try:
+        rects = {o["name"]: o.get("rect", {}) for o in outputs}
+        mr, er = rects.get(main, {}), rects.get(ext, {})
+        return (mr.get("x") == er.get("x") and mr.get("y") == er.get("y")
+                and mr.get("x") is not None)
+    except Exception:
+        return False
+
+
+def ext_visible_ws(workspaces, ext):
+    for w in workspaces:
+        if w.get("output") == ext and w.get("visible"):
+            return w.get("name", "")
+    return ""
+
+
+def focused_ws(workspaces):
+    for w in workspaces:
+        if w.get("focused"):
+            return w.get("name", "")
+    return ""
+
+
+def park_ext_on_mirror(main, ext):
+    """Ensure EXT shows __mirror, focus ends on MAIN. No-op if already parked."""
+    ws = get_workspaces()
+    if ext_visible_ws(ws, ext) == MIRROR_WS:
+        # Still make sure focus is on MAIN.
+        run_swaymsg("focus", "output", main)
+        return
+    run_swaymsg("focus", "output", ext)
+    run_swaymsg("workspace", MIRROR_WS)
+    run_swaymsg("focus", "output", main)
+
+
+def extract_target_workspace(args):
+    """Pull the workspace name out of `move ... to workspace [number] X`.
+    Returns None if not a move-to-workspace command."""
+    low = [a.lower() for a in args]
+    if "workspace" not in low:
+        return None
+    i = low.index("workspace")
+    rest = args[i + 1:]
+    if not rest:
+        return None
+    if rest[0].lower() == "number" and len(rest) > 1:
+        return rest[1]
+    return rest[0]
+
+
+def main():
+    args = sys.argv[1:]
+    if not args:
+        print("usage: sway-workspace <swaymsg args...>", file=sys.stderr)
+        return 2
+
+    r = run_swaymsg(*args)
+    if r.stdout:
+        sys.stdout.write(r.stdout)
+    if r.stderr:
+        sys.stderr.write(r.stderr)
+
+    outputs = get_outputs()
+    if not outputs:
+        return r.returncode
+    main_out = detect_main(outputs)
+    ext = detect_ext(outputs, main_out)
+    if not main_out or not ext or ext == main_out:
+        return r.returncode
+    if not mirror_active(outputs, main_out, ext):
+        return r.returncode
+
+    first = args[0].lower()
+    if first == "workspace":
+        # Switch: pull the newly focused workspace onto MAIN.
+        run_swaymsg("move", "workspace", "to", "output", main_out)
+        park_ext_on_mirror(main_out, ext)
+    elif first == "move":
+        target = extract_target_workspace(args)
+        if target:
+            saved = focused_ws(get_workspaces())
+            # Focus target (wherever it lives), pull to MAIN, park EXT, go back.
+            run_swaymsg("workspace", target)
+            run_swaymsg("move", "workspace", "to", "output", main_out)
+            park_ext_on_mirror(main_out, ext)
+            if saved and saved != MIRROR_WS:
+                run_swaymsg("workspace", saved)
+    elif first == "focus":
+        # e.g. `focus output ...` landing on EXT in mirror mode is pointless;
+        # bounce focus back to MAIN.
+        ws = get_workspaces()
+        fws = focused_ws(ws)
+        # If focus ended up on EXT (and not the mirror ws itself), return.
+        for w in ws:
+            if w.get("name") == fws and w.get("output") == ext \
+                    and fws != MIRROR_WS:
+                run_swaymsg("workspace", fws)
+                run_swaymsg("move", "workspace", "to", "output", main_out)
+                park_ext_on_mirror(main_out, ext)
+                break
+    return r.returncode
+
+
+if __name__ == "__main__":
+    sys.exit(main())

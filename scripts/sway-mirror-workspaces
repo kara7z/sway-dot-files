@@ -1,0 +1,174 @@
+#!/usr/bin/env python3
+"""sway-mirror-workspaces — one-shot consolidator for wl-mirror duplicate mode.
+
+Moves every user workspace to the MAIN output (eDP-*) and makes sure the
+external output shows only the dedicated mirror workspace (__mirror).
+
+  sway-mirror-workspaces [--main NAME] [--ext NAME] [--mirror-ws NAME] [--quiet]
+
+- Renames the workspace currently hosting wl-mirror to __mirror (frees the
+  numeric name it was squatting on, e.g. workspace 5).
+- Moves all other workspaces living on EXT to MAIN.
+- Switches EXT back to __mirror (creating it if needed) and returns focus
+  to the workspace you were on (now on MAIN).
+
+Safe to run when no mirror is active (exits 0, does nothing unless --force).
+Called by sway-display-toggle / sway-display-mirror-ensure on mirror-ON,
+and by the workspace wrapper + daemon for self-healing.
+"""
+import argparse
+import json
+import os
+import subprocess
+import sys
+
+MIRROR_WS_DEFAULT = os.environ.get("SWAY_MIRROR_WS", "__mirror")
+
+
+def swaymsg(*args):
+    r = subprocess.run(["swaymsg"] + list(args),
+                       capture_output=True, text=True)
+    return r
+
+
+def get_outputs():
+    r = swaymsg("-t", "get_outputs")
+    try:
+        return json.loads(r.stdout)
+    except Exception:
+        return []
+
+
+def get_workspaces():
+    r = swaymsg("-t", "get_workspaces")
+    try:
+        return json.loads(r.stdout)
+    except Exception:
+        return []
+
+
+def get_tree():
+    r = swaymsg("-t", "get_tree")
+    try:
+        return json.loads(r.stdout)
+    except Exception:
+        return {}
+
+
+def detect_main(outputs, override=""):
+    if override:
+        return override
+    for o in outputs:
+        if o.get("name", "").startswith("eDP-") and o.get("active"):
+            return o["name"]
+    for o in outputs:
+        if o.get("active"):
+            return o["name"]
+    return ""
+
+
+def detect_ext(outputs, main, override=""):
+    if override:
+        return override
+    for o in outputs:
+        if o.get("active") and o.get("name") != main:
+            return o["name"]
+    return ""
+
+
+def find_mirror_workspace(tree):
+    """Return (ws_name, output_name) hosting the wl-mirror window, or (None, None)."""
+    found = {}
+
+    def walk(n, out="?", ws="?"):
+        if n.get("type") == "output":
+            out = n.get("name") or out
+        if n.get("type") == "workspace":
+            ws = n.get("name") or ws
+        app = (n.get("app_id") or "") + " " + (n.get("name") or "")
+        if "mirror" in app.lower() and n.get("pid"):
+            # wl-mirror app_id is at.yrlf.wl_mirror, title "Wayland Output Mirror for ..."
+            if "wl_mirror" in (n.get("app_id") or "") or "Output Mirror" in (n.get("name") or ""):
+                found.setdefault("ws", ws)
+                found.setdefault("out", out)
+        for c in (n.get("nodes") or []) + (n.get("floating_nodes") or []):
+            walk(c, out, ws)
+
+    if tree:
+        walk(tree)
+    return found.get("ws"), found.get("out")
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--main", default="")
+    ap.add_argument("--ext", default="")
+    ap.add_argument("--mirror-ws", default=MIRROR_WS_DEFAULT)
+    ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--force", action="store_true",
+                    help="consolidate even when wl-mirror is not running")
+    args = ap.parse_args()
+    mirror_ws = args.mirror_ws or "__mirror"
+
+    outputs = get_outputs()
+    if not outputs:
+        print("sway-mirror-workspaces: cannot talk to sway", file=sys.stderr)
+        return 1
+    main_out = detect_main(outputs, args.main)
+    ext = detect_ext(outputs, main_out, args.ext)
+    if not main_out or not ext or ext == main_out:
+        return 0  # single-output session, nothing to do
+
+    # Only act in mirror mode (unless forced by caller).
+    import shutil
+    mirror_running = subprocess.run(
+        ["pgrep", "-x", "wl-mirror"],
+        capture_output=True).returncode == 0
+    if not mirror_running and not args.force:
+        # Hardware-clone also counts as mirror (same position on both outputs).
+        try:
+            rects = {o["name"]: o.get("rect", {}) for o in outputs}
+            mr, er = rects.get(main_out, {}), rects.get(ext, {})
+            same = (mr.get("x") == er.get("x") and mr.get("y") == er.get("y")
+                    and mr.get("x") is not None)
+        except Exception:
+            same = False
+        if not same:
+            return 0
+
+    ws_list = get_workspaces()
+    focused = next((w["name"] for w in ws_list if w.get("focused")), "")
+
+    # 1. Free the numeric name squatted by the mirror window.
+    tree = get_tree()
+    mws, mout = find_mirror_workspace(tree)
+    if mws and mws != mirror_ws:
+        if not args.quiet:
+            print(f"sway-mirror-workspaces: renaming mirror ws {mws!r} -> {mirror_ws!r}")
+        swaymsg("workspace", mws)
+        swaymsg("rename", "workspace", "to", mirror_ws)
+        ws_list = get_workspaces()
+
+    # 2. Pull every non-mirror workspace off EXT onto MAIN.
+    strays = [w["name"] for w in ws_list
+              if w.get("output") == ext and w.get("name") != mirror_ws]
+    for name in strays:
+        swaymsg("workspace", name)
+        swaymsg("move", "workspace", "to", "output", main_out)
+
+    # 3. Park EXT on the mirror workspace, return focus to MAIN.
+    swaymsg("focus", "output", ext)
+    swaymsg("workspace", mirror_ws)
+    swaymsg("focus", "output", main_out)
+    if focused and focused != mirror_ws:
+        # focused ws now lives on MAIN (we just moved it there if stray).
+        swaymsg("workspace", focused)
+
+    if not args.quiet:
+        print(f"sway-mirror-workspaces: MAIN={main_out} EXT={ext} "
+              f"moved={strays} mirror_ws={mirror_ws}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

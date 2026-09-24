@@ -1,0 +1,102 @@
+#!/bin/bash
+# sway-display-mirror-ensure — keep the laptop screen duplicated on the external, permanently.
+#
+# Idempotent "make sure mirror is ON":
+#   - exits 0 immediately if a manual-off flag exists ($mod+p --off was used)
+#   - exits 0 if wl-mirror already running, or no external connected
+#   - otherwise starts wl-mirror fullscreen on the external (SHM backends first,
+#     10-bit render_bit_depth safe) and verifies it actually captured.
+#
+# Callers:
+#   sway config login:  exec bash -c 'rm -f <flag>; sway-display-mirror-ensure ...'
+#   way-displays CALLBACK_CMD (hotplug/replug while daemon is alive)
+set -u
+
+FLAG="${XDG_CACHE_HOME:-$HOME/.cache}/sway-mirror-manual-off"
+LOG=/tmp/wl-mirror.log
+BACKENDS="${SWAY_MIRROR_BACKENDS:-extcopy-shm screencopy-shm auto}"
+
+if [ -z "${SWAYSOCK:-}" ]; then
+  SWAYSOCK=$(ls /run/user/"$(id -u)"/sway-ipc.* 2>/dev/null | head -1)
+  export SWAYSOCK
+fi
+
+[ -f "$FLAG" ] && exit 0
+if pgrep -x wl-mirror >/dev/null 2>&1; then
+  # Mirror already up (e.g. login race / hotplug): make sure the workspace
+  # guard daemon is alive too, then exit.
+  [ -x "$HOME/.local/bin/sway-mirror-workspace-daemon" ] && \
+    "$HOME/.local/bin/sway-mirror-workspace-daemon" >/dev/null 2>&1 || true
+  exit 0
+fi
+
+# Wait briefly for an external (login races the output appearing).
+MAIN=""; EXT=""
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  TSV=$(swaymsg -t get_outputs 2>/dev/null | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+for o in data:
+    m = o.get("current_mode") or {}
+    r = o.get("rect") or {}
+    print("\t".join(str(v) for v in (
+        o["name"], 1 if o.get("active") else 0,
+        r.get("x", 0), r.get("y", 0), r.get("width", 0), r.get("height", 0),
+        m.get("width", 0), m.get("height", 0))))
+')
+  [ -n "${TSV:-}" ] || { sleep 1; continue; }
+  MAIN=$(printf '%s\n' "$TSV" | awk -F'\t' '$2==1 && $1 ~ /^eDP/ {print $1; exit}')
+  [ -n "$MAIN" ] || MAIN=$(printf '%s\n' "$TSV" | awk -F'\t' '$2==1 {print $1; exit}')
+  EXT=$(printf '%s\n' "$TSV" | awk -F'\t' -v m="$MAIN" '$2==1 && $1!=m {print $1; exit}')
+  [ -n "${EXT:-}" ] && break
+  sleep 1
+done
+[ -n "${EXT:-}" ] || exit 0
+
+# fit letterboxes the 16:10 laptop image on 16:9 externals so the full
+# image stays visible (set SCALE=cover below to fill edge-to-edge instead).
+SCALE=fit
+
+# Pre-mirror: park EXT on __mirror so wl-mirror lands in the dedicated
+# workspace instead of squatting a numeric one.
+if [ -x "$HOME/.local/bin/sway-mirror-workspaces" ]; then
+  "$HOME/.local/bin/sway-mirror-workspaces" --force --quiet >/dev/null 2>&1 || true
+  swaymsg focus output "$MAIN" >/dev/null 2>&1 || true
+fi
+
+for b in $BACKENDS; do
+  : > "$LOG"
+  nohup wl-mirror --backend "$b" --scaling "$SCALE" --fullscreen-output "$EXT" "$MAIN" >>"$LOG" 2>&1 &
+  pid=$!
+  ok=no
+  for _ in 1 2 3 4; do
+    sleep 0.7
+    kill -0 "$pid" 2>/dev/null || break
+    grep -q '^error' "$LOG" && break
+    ok=yes; break
+  done
+  if [ "$ok" = yes ]; then
+    echo "mirror-ensure: $MAIN -> $EXT ($b, $SCALE)"
+    # Park EXT on __mirror / pull strays to MAIN so the duplicate never
+    # diverges, and (re)start the workspace guard daemon.
+    if [ -x "$HOME/.local/bin/sway-mirror-workspaces" ]; then
+      "$HOME/.local/bin/sway-mirror-workspaces" --quiet >/dev/null 2>&1 || true
+    fi
+    if [ -x "$HOME/.local/bin/sway-mirror-workspace-daemon" ]; then
+      "$HOME/.local/bin/sway-mirror-workspace-daemon" >/dev/null 2>&1 || true
+    fi
+    swaymsg focus output "$MAIN" >/dev/null 2>&1 || true
+    exit 0
+  fi
+  kill "$pid" 2>/dev/null || true
+  sleep 0.5
+  kill -9 "$pid" 2>/dev/null || true
+  pkill -9 -x wl-mirror 2>/dev/null || true
+  sleep 0.3
+done
+
+echo "mirror-ensure: FAILED, see $LOG"
+exit 1

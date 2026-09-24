@@ -1,4 +1,9 @@
 #!/bin/bash
+# Touch-gesture workspace stepper. Mirror-safe: routes through sway-workspace
+# so next/prev in duplicate mode stays on MAIN (eDP-*) instead of
+# stranding the new workspace on the external.
+WSW="$HOME/.local/bin/sway-workspace"
+[ -x "$WSW" ] || WSW="swaymsg"
 
 current=$(swaymsg -t get_workspaces | jq -r '.[] | select(.focused).num')
 
@@ -6,13 +11,13 @@ case "$1" in
 next)
   if [ "$current" -lt 10 ]; then
     next=$((current + 1))
-    swaymsg workspace number "$next"
+    if [ "$WSW" = "swaymsg" ]; then swaymsg workspace number "$next"; else "$WSW" workspace number "$next"; fi
   fi
   ;;
 prev)
   if [ "$current" -gt 1 ]; then
     prev=$((current - 1))
-    swaymsg workspace number "$prev"
+    if [ "$WSW" = "swaymsg" ]; then swaymsg workspace number "$prev"; else "$WSW" workspace number "$prev"; fi
   fi
   ;;
 esac

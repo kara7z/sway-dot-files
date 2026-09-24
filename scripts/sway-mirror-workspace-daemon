@@ -1,0 +1,240 @@
+#!/usr/bin/env python3
+"""sway-mirror-workspace-daemon — keep workspaces on MAIN while mirrored.
+
+Catches every workspace switch that bypasses keybindings (waybar workspace
+buttons, gestures, scripts, `swaymsg workspace ...` by hand) and redirects
+it to the laptop panel when wl-mirror duplicate mode is active.
+
+Loop:
+  subscribe to sway workspace/window/output events ->
+  on each event (debounced 150ms):
+    if wl-mirror not running (and no hardware-clone overlap): keep waiting
+    else:
+      - rename mirror-hosting ws to __mirror if needed (one-shot)
+      - move every other EXT workspace to MAIN (eDP-*)
+      - park EXT on __mirror
+      - if focus is on EXT (non-mirror ws), pull that ws to MAIN
+
+Run:  sway-mirror-workspace-daemon [--foreground]
+Stop: pkill -f sway-mirror-workspace-daemon
+Pidfile: /tmp/sway-mirror-daemon.pid   Log: /tmp/sway-mirror-daemon.log
+Idempotent: a second instance exits if one is already alive.
+"""
+import json
+import os
+import subprocess
+import sys
+import time
+
+MIRROR_WS = os.environ.get("SWAY_MIRROR_WS", "__mirror")
+PIDFILE = "/tmp/sway-mirror-daemon.pid"
+LOG = "/tmp/sway-mirror-daemon.log"
+
+
+def log(*a):
+    try:
+        with open(LOG, "a") as f:
+            f.write(time.strftime("%H:%M:%S") + " " + " ".join(map(str, a)) + "\n")
+    except Exception:
+        pass
+
+
+def run(*args):
+    return subprocess.run(["swaymsg"] + list(args),
+                          capture_output=True, text=True)
+
+
+def get_outputs():
+    try:
+        return json.loads(run("-t", "get_outputs").stdout)
+    except Exception:
+        return []
+
+
+def get_workspaces():
+    try:
+        return json.loads(run("-t", "get_workspaces").stdout)
+    except Exception:
+        return []
+
+
+def get_tree():
+    try:
+        return json.loads(run("-t", "get_tree").stdout)
+    except Exception:
+        return {}
+
+
+def detect_main(outputs):
+    for o in outputs:
+        if o.get("name", "").startswith("eDP-") and o.get("active"):
+            return o["name"]
+    for o in outputs:
+        if o.get("active"):
+            return o["name"]
+    return ""
+
+
+def detect_ext(outputs, main):
+    for o in outputs:
+        if o.get("active") and o.get("name") != main:
+            return o["name"]
+    return ""
+
+
+def mirror_on(outputs, main, ext):
+    if subprocess.run(["pgrep", "-x", "wl-mirror"],
+                       capture_output=True).returncode == 0:
+        return True
+    try:
+        rects = {o["name"]: o.get("rect", {}) for o in outputs}
+        mr, er = rects.get(main, {}), rects.get(ext, {})
+        return (mr.get("x") == er.get("x") and mr.get("y") == er.get("y")
+                and mr.get("x") is not None)
+    except Exception:
+        return False
+
+
+def find_mirror_ws(tree):
+    found = {}
+
+    def walk(n, out="?", ws="?"):
+        if n.get("type") == "output":
+            out = n.get("name") or out
+        if n.get("type") == "workspace":
+            ws = n.get("name") or ws
+        if "wl_mirror" in (n.get("app_id") or "") or \
+                "Output Mirror" in (n.get("name") or ""):
+            if n.get("pid"):
+                found.setdefault("ws", ws)
+        for c in (n.get("nodes") or []) + (n.get("floating_nodes") or []):
+            walk(c, out, ws)
+
+    if tree:
+        walk(tree)
+    return found.get("ws")
+
+
+def enforce_once():
+    outputs = get_outputs()
+    if not outputs:
+        return
+    main = detect_main(outputs)
+    ext = detect_ext(outputs, main)
+    if not main or not ext or ext == main:
+        return
+    if not mirror_on(outputs, main, ext):
+        return
+
+    ws = get_workspaces()
+    focused = next((w["name"] for w in ws if w.get("focused")), "")
+
+    # One-shot rename: mirror window squatting on a numeric name blocks it.
+    mws = find_mirror_ws(get_tree())
+    if mws and mws != MIRROR_WS:
+        log(f"rename mirror ws {mws!r} -> {MIRROR_WS!r}")
+        run("workspace", mws)
+        run("rename", "workspace", "to", MIRROR_WS)
+        ws = get_workspaces()
+
+    strays = [w["name"] for w in ws
+              if w.get("output") == ext and w.get("name") != MIRROR_WS]
+    for name in strays:
+        log(f"pull {name!r} {ext} -> {main}")
+        run("workspace", name)
+        run("move", "workspace", "to", "output", main)
+
+    # Park EXT on the mirror workspace.
+    ws = get_workspaces()
+    visible_ext = next((w["name"] for w in ws
+                        if w.get("output") == ext and w.get("visible")), "")
+    if visible_ext != MIRROR_WS:
+        run("focus", "output", ext)
+        run("workspace", MIRROR_WS)
+    run("focus", "output", main)
+    if focused and focused != MIRROR_WS:
+        run("workspace", focused)
+
+
+def already_running():
+    try:
+        with open(PIDFILE) as f:
+            pid = int(f.read().strip())
+        os.kill(pid, 0)
+        # make sure it's really this daemon (cmdline check, best effort)
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                if b"sway-mirror-workspace-daemon" in f.read():
+                    return True
+        except Exception:
+            return True
+        return True
+    except Exception:
+        return False
+
+
+def main():
+    foreground = "--foreground" in sys.argv
+    if already_running():
+        print("sway-mirror-workspace-daemon: already running")
+        return 0
+    if not foreground:
+        # daemonize: re-spawn detached, parent exits immediately
+        subprocess.Popen([sys.executable, os.path.abspath(__file__), "--foreground"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         stdin=subprocess.DEVNULL, start_new_session=True)
+        return 0
+    try:
+        with open(PIDFILE, "w") as f:
+            f.write(str(os.getpid()))
+    except Exception:
+        pass
+    log("daemon started")
+    # Initial sweep (fixes workspaces stranded on EXT before daemon launch).
+    try:
+        enforce_once()
+    except Exception as e:
+        log("initial enforce failed:", e)
+
+    # Event loop: coalesce bursts with a short debounce.
+    try:
+        proc = subprocess.Popen(
+            ["swaymsg", "-m", "-t", "subscribe",
+             '["workspace","window","output"]'],
+            stdout=subprocess.PIPE, text=True, bufsize=1)
+    except Exception as e:
+        log("subscribe failed:", e)
+        return 1
+    pending = 0.0
+    try:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            now = time.time()
+            if now - pending < 0.15:
+                continue  # coalesce bursts; the trailing event re-triggers
+            pending = now
+            time.sleep(0.15)
+            try:
+                enforce_once()
+            except Exception as e:
+                log("enforce failed:", e)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        try:
+            os.unlink(PIDFILE)
+        except Exception:
+            pass
+        log("daemon stopped")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
