@@ -1,43 +1,61 @@
 #!/bin/sh
 # Portable — uses $HOME (no hardcoded user path)
-WOFI_STYLE="${XDG_CONFIG_HOME:-$HOME/.config}/wofi/power.css"
-WIFI_PASS_SCRIPT="${XDG_CONFIG_HOME:-$HOME/.config}/waybar/wifi_pass.py"
-# Fallback if waybar is at ~/.config/waybar (repo layout)
-[ -f "$WIFI_PASS_SCRIPT" ] || WIFI_PASS_SCRIPT="$(dirname "$0")/wifi_pass.py"
-LOCK="/tmp/waybar_wifi_menu.lock"
+# Anchored dropdown menu (no rofi/wofi): waybar-dropdown, see scripts/
+DROPDOWN="${DROPDOWN:-$HOME/.local/bin/waybar-dropdown}"
+LOCK="${XDG_RUNTIME_DIR:-/tmp}/waybar-wifi-menu.lock"
 
+# Small action menu helper: ask <prompt> <lines>  (items on stdin)
+ask() {
+    "$DROPDOWN" --width 300 --prompt "$1" --max-lines "$2"
+}
+
+# Masked password prompt (dropdown entry)
+ask_password() {
+    "$DROPDOWN" --password --prompt "Password for $1"
+}
+
+# Toggle: a second click on the waybar network icon closes the open menu
 if [ -f "$LOCK" ]; then
-    old_pid=$(cat "$LOCK")
-    if kill -0 "$old_pid" 2>/dev/null; then
-        kill "$old_pid" 2>/dev/null
-        rm -f "$LOCK"
-        exit 0
-    else
-        rm -f "$LOCK"
+    old_pid=$(cat "$LOCK" 2>/dev/null)
+    if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
+        case "$(cat "/proc/$old_pid/comm" 2>/dev/null)" in
+            sh|bash|dash)
+                pkill -P "$old_pid" 2>/dev/null   # the dropdown child
+                kill "$old_pid" 2>/dev/null
+                rm -f "$LOCK"
+                exit 0
+                ;;
+        esac
     fi
+    rm -f "$LOCK"
 fi
 
 echo $$ > "$LOCK"
 trap 'rm -f "$LOCK"' EXIT
 
-wifi=$(nmcli -t -f active,ssid,signal,security dev wifi 2>/dev/null)
+# Fast path: cached AP list (~7 ms). Plain 'dev wifi' rescans whenever the
+# cache is older than 30 s and blocks the menu for ~3 s (and briefly disturbs
+# the radio, which shows up as ping spikes in games).
+wifi=$(nmcli -t -f active,ssid,signal,security dev wifi list --rescan no 2>/dev/null)
+# Cold boot / empty cache: pay for one real scan so the menu is never empty
+[ -z "$wifi" ] && wifi=$(nmcli -t -f active,ssid,signal,security dev wifi list --rescan yes 2>/dev/null)
 iface=$(nmcli -t -f DEVICE,TYPE device status 2>/dev/null | grep ':wifi$' | cut -d: -f1)
 
 [ -z "$iface" ] && exit 0
 
-current=$(echo "$wifi" | grep '^yes:' | cut -d: -f2)
+current=$(printf '%s\n' "$wifi" | grep '^yes:' | cut -d: -f2)
 
-list=$(echo "$wifi" | grep -v '^$' | sort -t: -k3,3rn | awk -F: '!seen[$2]++' | while IFS=: read -r active ssid signal security; do
+list=$(printf '%s\n' "$wifi" | grep -v '^$' | sort -t: -k1,1r -k3,3rn | awk -F: '!seen[$2]++' | while IFS=: read -r active ssid signal security; do
     [ -z "$ssid" ] && continue
     sig=$((signal))
     if [ "$sig" -ge 75 ]; then
-        icon=""
+        icon="󰤨"
     elif [ "$sig" -ge 50 ]; then
-        icon=""
+        icon="󰤥"
     elif [ "$sig" -ge 25 ]; then
-        icon=""
+        icon="󰤢"
     else
-        icon=""
+        icon="󰤟"
     fi
     if [ "$active" = "yes" ]; then
         printf "\u2713 %s  %s%%  %s\n" "$icon" "$signal" "$ssid"
@@ -48,80 +66,81 @@ done)
 
 [ -z "$list" ] && exit 0
 
-count=$(echo "$list" | grep -c .)
+count=$(printf '%s\n' "$list" | grep -c .)
 
-maxlen=$(echo "$list" | awk '{ print length }' | sort -rn | head -1)
+maxlen=$(printf '%s\n' "$list" | awk '{ print length }' | sort -rn | head -1)
 width=$((maxlen * 10 + 40))
+[ "$width" -gt 640 ] && width=640   # long SSIDs must not push the menu off-screen
+lines=$count
+[ "$lines" -gt 12 ] && lines=12     # cap the height, scroll the rest
 
-chosen=$(echo "$list" | wofi --dmenu \
-    --width $width --location center \
-    --prompt "WiFi" --hide-search \
-    --lines $count \
-    --conf /dev/null \
-    --style "$WOFI_STYLE")
+chosen=$(printf '%s\n' "$list" | "$DROPDOWN" \
+    --width "$width" --prompt "WiFi" --max-lines "$lines")
 
 [ -z "$chosen" ] && exit 0
 
-ssid=$(echo "$chosen" | sed 's/^.*%  //')
+ssid=$(printf '%s' "$chosen" | sed 's/^.*%  //')
+[ -z "$ssid" ] && exit 0
 
+# Currently connected network: Disconnect / Forget / Cancel
 if [ "$ssid" = "$current" ]; then
-    action=$(echo -e "Disconnect\nForget\nCancel" | wofi --dmenu \
-        --width 300 --location center \
-        --prompt "$ssid (Connected)" --hide-search \
-        --lines 3 \
-        --conf /dev/null \
-        --style "$WOFI_STYLE")
-    [ "$action" = "Disconnect" ] && nmcli device disconnect "$iface"
-    [ "$action" = "Forget" ] && nmcli connection delete "$ssid"
+    action=$(printf '%b' "Disconnect\nForget\nCancel" | ask "$ssid (Connected)" 3)
+    case "$action" in
+        Disconnect) nmcli device disconnect "$iface" &&
+                        notify-send -a wifi-menu "Wi-Fi" "Disconnected from $ssid" ;;
+        Forget)     nmcli connection delete "$ssid" &&
+                        notify-send -a wifi-menu "Wi-Fi" "Forgot $ssid" ;;
+    esac
     exit 0
 fi
 
-security=$(echo "$wifi" | grep -F ":${ssid}:" | head -1 | awk -F: '{print $NF}' | xargs)
+security=$(printf '%s\n' "$wifi" | grep -F ":${ssid}:" | head -1 | awk -F: '{print $NF}' | xargs)
 saved=$(nmcli -t -f name connection show 2>/dev/null | grep -Fx "$ssid")
 
 if [ -n "$security" ] && [ "$security" != "--" ]; then
+    # Secured network -------------------------------------------------------
     if [ -n "$saved" ]; then
-        action=$(echo -e "Connect\nForget\nCancel" | wofi --dmenu \
-            --width 300 --location center \
-            --prompt "$ssid" --hide-search \
-            --lines 3 \
-            --conf /dev/null \
-            --style "$WOFI_STYLE")
+        action=$(printf '%b' "Connect\nForget\nCancel" | ask "$ssid" 3)
         [ "$action" = "Forget" ] && { nmcli connection delete "$ssid"; exit 0; }
         [ "$action" != "Connect" ] && exit 0
+        # Stored credentials first (fast path, no prompt)
+        if nmcli device wifi connect "$ssid" >/dev/null 2>&1; then
+            notify-send -a wifi-menu "Wi-Fi" "Connected to $ssid"
+            exit 0
+        fi
     else
-        action=$(echo -e "Connect\nCancel" | wofi --dmenu \
-            --width 300 --location center \
-            --prompt "$ssid" --hide-search \
-            --lines 2 \
-            --conf /dev/null \
-            --style "$WOFI_STYLE")
+        action=$(printf '%b' "Connect\nCancel" | ask "$ssid" 2)
         [ "$action" != "Connect" ] && exit 0
     fi
-    result=$(nmcli device wifi connect "$ssid" 2>&1)
-    if echo "$result" | grep -q "successfully"; then
-        exit 0
-    fi
-    pass=$(python3 "$WIFI_PASS_SCRIPT" "$ssid" 2>/dev/null)
-    [ -n "$pass" ] && nmcli device wifi connect "$ssid" password "$pass"
+
+    # Password prompt (dropdown masked entry), retried while it is wrong
+    tries=0
+    while [ "$tries" -lt 3 ]; do
+        pass=$(ask_password "$ssid")
+        [ -z "$pass" ] && exit 0
+        if nmcli device wifi connect "$ssid" password "$pass" >/dev/null 2>&1; then
+            notify-send -a wifi-menu "Wi-Fi" "Connected to $ssid"
+            exit 0
+        fi
+        tries=$((tries + 1))
+        [ "$tries" -lt 3 ] && notify-send -a wifi-menu -u normal "Wi-Fi" "Wrong password for $ssid"
+    done
+    notify-send -a wifi-menu -u critical "Wi-Fi" "Could not connect to $ssid"
+    exit 1
 else
+    # Open network ----------------------------------------------------------
     if [ -n "$saved" ]; then
-        action=$(echo -e "Connect\nForget\nCancel" | wofi --dmenu \
-            --width 300 --location center \
-            --prompt "$ssid" --hide-search \
-            --lines 3 \
-            --conf /dev/null \
-            --style "$WOFI_STYLE")
+        action=$(printf '%b' "Connect\nForget\nCancel" | ask "$ssid" 3)
         [ "$action" = "Forget" ] && { nmcli connection delete "$ssid"; exit 0; }
         [ "$action" != "Connect" ] && exit 0
     else
-        action=$(echo -e "Connect\nCancel" | wofi --dmenu \
-            --width 300 --location center \
-            --prompt "$ssid" --hide-search \
-            --lines 2 \
-            --conf /dev/null \
-            --style "$WOFI_STYLE")
+        action=$(printf '%b' "Connect\nCancel" | ask "$ssid" 2)
         [ "$action" != "Connect" ] && exit 0
     fi
-    nmcli device wifi connect "$ssid" 2>/dev/null
+    if nmcli device wifi connect "$ssid" >/dev/null 2>&1; then
+        notify-send -a wifi-menu "Wi-Fi" "Connected to $ssid"
+    else
+        notify-send -a wifi-menu -u critical "Wi-Fi" "Could not connect to $ssid"
+        exit 1
+    fi
 fi

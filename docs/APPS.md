@@ -84,16 +84,16 @@
 | `mpd` | `mpd` + `playerctl` icons | 54 |
 | `pulseaudio` | `pavucontrol` click | 160 |
 | `custom/kblayout` | `swaymsg get_inputs` via `kblayout.sh` | 191 |
-| `network` | `nmcli` via `wifi_menu.sh` | 150 |
+| `network` | `nmcli` via `wifi_menu.sh` → anchored dropdown | 150 |
 | `power-profiles-daemon` | `powerprofilesctl` | 139 |
 | `backlight` | `brightnessctl` | 115 |
 | `battery` | `/sys/class/power_supply/BAT0` | 123 |
-| `custom/power` | `power_menu.sh` → `wofi` + `shutdown/reboot/systemctl` | 218 |
+| `custom/power` | `power_menu.sh` → anchored dropdown (`waybar-dropdown`) + `systemctl` | 218 |
 | *(unused)* `cpu` `memory` `temperature` | `cpu/memory/temp` | 100/104/107 |
 | *(unused)* `custom/media` | `mediaplayer.py` → `playerctl` | 179 |
 
 ## Dependency Checklist
 
 From `deps/pacman.txt` + manual:
-`swayfx-git scenefx-git waybar swaync swaybg swayidle swaylock wofi wmenu grim wl-mirror awww kitty nautilus nwg-displays waypaper blueman brightnessctl playerctl pavucontrol pipewire-pulse networkmanager python-gobject jq wl-clipboard libnotify power-profiles-daemon`
+`swayfx-git scenefx-git waybar swaync swaybg swayidle swaylock wofi wmenu grim wl-mirror awww kitty nautilus nwg-displays waypaper blueman brightnessctl playerctl pavucontrol pipewire-pulse networkmanager python-gobject gtk-layer-shell jq wl-clipboard libnotify power-profiles-daemon`
 Fonts: `ttf-firacode-nerd otf-font-awesome`, cursor `Bibata-Modern-Ice:29`

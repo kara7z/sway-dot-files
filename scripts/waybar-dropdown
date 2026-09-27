@@ -1,0 +1,277 @@
+#!/usr/bin/env python3
+"""waybar-dropdown — anchored dropdown menu for the waybar power/wifi modules.
+
+Reads items (one per line) on stdin and shows them as a dropdown panel
+anchored to the top-right of the screen, directly under the bar
+(gtk-layer-shell — the same layer mechanism waybar itself uses). The chosen
+line is printed on stdout:
+
+    printf 'Lock\\nSuspend\\nLogout\\n' | waybar-dropdown --prompt Power
+
+Keys: Up/Down move, Enter chooses, Esc cancels; a click outside cancels too.
+Exit status: 0 = line chosen, 1 = cancelled, 2 = usage/unavailable.
+
+Usage: waybar-dropdown [--prompt TEXT] [--width N] [--margin-top N]
+                       [--margin-right N] [--max-lines N] [--password]
+                       [--dry-run]
+
+Options:
+  --password   masked single-line entry instead of a list (prints the text)
+  --dry-run    parse args/items and print the resolved config as JSON, no GUI
+"""
+import argparse
+import json
+import sys
+
+ROW_HEIGHT = 34          # px; keep in sync with the CSS below
+MIN_WIDTH = 240
+MAX_WIDTH = 560
+DEFAULT_MARGIN_TOP = 36  # bar height (30) + border + small gap
+DEFAULT_MARGIN_RIGHT = 8
+
+CSS = b"""
+window { background-color: transparent; }
+#dropdown {
+    background-color: rgba(0, 0, 0, 0.6);
+    border: 1px solid white;
+    color: white;
+    font-family: "FiraCode Nerd Font", monospace;
+    font-size: 16px;
+}
+#header {
+    color: rgba(255, 255, 255, 0.75);
+    font-size: 13px;
+    padding: 10px 16px 2px 16px;
+}
+.row {
+    padding: 8px 16px;
+    min-height: 18px;
+    color: white;
+}
+.row:hover { background-color: rgba(255, 255, 255, 0.10); }
+.row.selected {
+    background-color: rgba(255, 255, 255, 0.15);
+    box-shadow: inset 0 -2px #ffffff;
+}
+#password { padding: 10px 16px; }
+#password entry {
+    background-color: rgba(255, 255, 255, 0.1);
+    color: white;
+    border: 1px solid white;
+    border-radius: 0;
+    padding: 8px;
+    font-family: "FiraCode Nerd Font", monospace;
+    font-size: 16px;
+    min-width: 320px;
+}
+"""
+
+
+def parse_args(argv):
+    p = argparse.ArgumentParser()
+    p.add_argument("--prompt", default="")
+    p.add_argument("--width", type=int, default=0)
+    p.add_argument("--margin-top", type=int, default=DEFAULT_MARGIN_TOP)
+    p.add_argument("--margin-right", type=int, default=DEFAULT_MARGIN_RIGHT)
+    p.add_argument("--max-lines", type=int, default=10)
+    p.add_argument("--password", action="store_true")
+    p.add_argument("--dry-run", action="store_true")
+    return p.parse_args(argv)
+
+
+def load_items():
+    return [line.rstrip("\n") for line in sys.stdin if line.rstrip("\n") != ""]
+
+
+def auto_width(items, prompt):
+    longest = max([len(prompt)] + [len(i) for i in items] or [0])
+    return max(MIN_WIDTH, min(MAX_WIDTH, longest * 10 + 40))
+
+
+class Dropdown:
+    def __init__(self, args, items):
+        import gi
+        gi.require_version("Gtk", "3.0")
+        gi.require_version("GtkLayerShell", "0.1")
+        from gi.repository import Gtk, Gdk, GtkLayerShell
+        self.Gtk, self.Gdk, self.LS = Gtk, Gdk, GtkLayerShell
+
+        self.args = args
+        self.items = items
+        self.selected = 0
+        self.done = False
+        self.had_focus = False
+        self.result = None
+
+        width = args.width or auto_width(items, args.prompt)
+        self.win = Gtk.Window()
+        self.win.set_decorated(False)
+        self.win.set_resizable(False)
+        self.win.set_size_request(width, -1)
+
+        LS = self.LS
+        LS.init_for_window(self.win)
+        LS.set_layer(self.win, LS.Layer.OVERLAY)
+        LS.set_anchor(self.win, LS.Edge.TOP, True)
+        LS.set_anchor(self.win, LS.Edge.RIGHT, True)
+        LS.set_margin(self.win, LS.Edge.TOP, args.margin_top)
+        LS.set_margin(self.win, LS.Edge.RIGHT, args.margin_right)
+        LS.set_keyboard_mode(self.win, LS.KeyboardMode.EXCLUSIVE)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.set_name("dropdown")
+        self.win.add(box)
+
+        if args.prompt:
+            header = Gtk.Label(label=args.prompt, xalign=0)
+            header.set_name("header")
+            box.add(header)
+
+        if args.password:
+            entry = Gtk.Entry(visibility=False)
+            entry.set_input_purpose(Gtk.InputPurpose.PASSWORD)
+            entry.connect("activate", self.on_password_enter)
+            holder = Gtk.Box()
+            holder.set_name("password")
+            holder.add(entry)
+            box.add(holder)
+            self.entry = entry
+        else:
+            scroller = Gtk.ScrolledWindow()
+            scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+            scroller.props.max_content_height = max(1, min(args.max_lines, len(items))) * ROW_HEIGHT
+            holder = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            scroller.add(holder)
+            box.add(scroller)
+            self.rows = []
+            for idx, text in enumerate(items):
+                row = Gtk.EventBox()
+                row.get_style_context().add_class("row")
+                row.add(Gtk.Label(label=text, xalign=0))
+                row.connect("button-press-event", self.on_row_click, idx)
+                row.connect("enter-notify-event", self.on_row_hover, idx)
+                holder.add(row)
+                self.rows.append(row)
+            self.apply_selection()
+
+        self.win.connect("key-press-event", self.on_key)
+        self.win.connect("focus-in-event", self.on_focus_in)
+        self.win.connect("focus-out-event", self.on_focus_out)
+
+        provider = Gtk.CssProvider()
+        provider.load_from_data(CSS)
+        Gtk.StyleContext.add_provider_for_screen(
+            Gdk.Screen.get_default(), provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+    def apply_selection(self):
+        for idx, row in enumerate(self.rows):
+            ctx = row.get_style_context()
+            if idx == self.selected:
+                ctx.add_class("selected")
+            else:
+                ctx.remove_class("selected")
+
+    def move(self, step):
+        self.selected = max(0, min(len(self.items) - 1, self.selected + step))
+        self.apply_selection()
+
+    def choose(self, idx=None):
+        if idx is None:
+            idx = self.selected
+        if self.items:
+            self.finish(0, self.items[idx])
+
+    def on_row_click(self, _row, _event, idx):
+        self.choose(idx)
+        return True
+
+    def on_row_hover(self, _row, event, idx):
+        if event.detail != self.Gdk.NotifyType.INFERIOR:
+            self.selected = idx
+            self.apply_selection()
+        return False
+
+    def on_password_enter(self, entry):
+        self.finish(0, entry.get_text())
+
+    def on_key(self, _win, event):
+        key = event.keyval
+        if key == self.Gdk.KEY_Escape:
+            self.finish(1, None)
+        elif self.args.password:
+            return False
+        elif key in (self.Gdk.KEY_Return, self.Gdk.KEY_KP_Enter):
+            self.choose()
+        elif key == self.Gdk.KEY_Up:
+            self.move(-1)
+        elif key == self.Gdk.KEY_Down:
+            self.move(1)
+        elif key == self.Gdk.KEY_Home:
+            self.move(-len(self.items))
+        elif key == self.Gdk.KEY_End:
+            self.move(len(self.items))
+        return True
+
+    def on_focus_in(self, *_a):
+        self.had_focus = True
+        return False
+
+    def on_focus_out(self, *_a):
+        if self.had_focus:
+            self.finish(1, None)
+        return False
+
+    def finish(self, rc, text):
+        if not self.done:
+            self.done = True
+            self.result = (rc, text)
+            self.Gtk.main_quit()
+
+    def run(self):
+        self.win.show_all()
+        if self.args.password:
+            self.entry.grab_focus()
+        self.Gtk.main()
+        return self.result or (1, None)
+
+
+def main():
+    args = parse_args(sys.argv[1:])
+    items = load_items()
+
+    if args.dry_run:
+        print(json.dumps({
+            "mode": "password" if args.password else "list",
+            "prompt": args.prompt,
+            "width": args.width or auto_width(items, args.prompt),
+            "max_lines": args.max_lines,
+            "margin_top": args.margin_top,
+            "margin_right": args.margin_right,
+            "items": items,
+        }, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.password and not args.prompt:
+        args.prompt = "Password"
+    if not args.password and not items:
+        print("waybar-dropdown: no items on stdin", file=sys.stderr)
+        return 1
+
+    try:
+        import gi
+        gi.require_version("Gtk", "3.0")
+        gi.require_version("GtkLayerShell", "0.1")
+    except (ImportError, ValueError) as exc:
+        print(f"waybar-dropdown: Gtk/GtkLayerShell unavailable: {exc}", file=sys.stderr)
+        return 2
+
+    rc, text = Dropdown(args, items).run()
+    if rc == 0 and text is not None:
+        sys.stdout.write(text + "\n")
+        sys.stdout.flush()
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main())

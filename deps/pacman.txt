@@ -52,6 +52,7 @@ python
 python-gobject
 python-pydbus
 gtk3
+gtk-layer-shell
 libnotify
 # Fonts + cursor (required for waybar/style.css + sway cursor)
 ttf-firacode-nerd

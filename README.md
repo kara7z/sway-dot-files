@@ -22,9 +22,9 @@ sway-dot-files/
 │   ├── config              # JSONC (// comments, Waybar supports JSONC)
 │   ├── style.css           # black/white + translucent overlays
 │   ├── kblayout.sh         # US/AR/FR poll (jq, 0.25s) + wofi popup
-│   ├── wifi_menu.sh        # nmcli + wofi + wifi_pass.py
-│   ├── wifi_pass.py        # GTK3 password dialog
-│   ├── power_menu.sh       # wofi power menu
+│   ├── wifi_menu.sh        # nmcli (cached) + waybar-dropdown (anchored)
+│   ├── wifi_pass.py        # legacy GTK3 dialog (replaced by dropdown --password)
+│   ├── power_menu.sh       # waybar-dropdown power menu (hibernate auto-hidden)
 │   ├── mediaplayer.py      # playerctl MPRIS → JSON
 │   └── power_menu.xml      # legacy GTK menu (unused)
 ├── swaync/
@@ -40,6 +40,7 @@ sway-dot-files/
 │   ├── sway-idle-lock      # one swayidle: lock 5 min, outputs off 10 min, lock before sleep
 │   ├── sway-lock           # lock now: classic wallpaper lock (shared by idle/before-sleep/Super+L)
 │   ├── sway-brightness     # Fn keys + waybar scroll: 2% steps, clamped to 1%..100%
+│   ├── waybar-dropdown     # anchored dropdown menu (gtk-layer-shell) for power/wifi buttons
 │   ├── sway-game-unstick   # unstick a frozen fullscreen game (Super+G: fullscreen off/on)
 │   ├── sway-game-freeze-daemon # auto-detect & auto-unstick frozen game frames in background
 │   ├── sway-gamepad-idle-guard # no idle lock while a gamepad is used (evdev -> inhibit_idle)
@@ -124,7 +125,7 @@ sudo pacman -S stow
 
 ## Waybar
 
-`docs/WAYBAR_MODULES.md`: left `workspaces/mode/scratchpad`, center `clock`, right `notification/tray/pulseaudio/kblayout/network/power-profiles/backlight/battery/power` — uses `custom/kblayout` (`kblayout.sh`, `jq` poll 0.25s), `network` (`wifi_menu.sh`), `pulseaudio` (`pavucontrol`); `mpd` is defined but disabled (no MPD server on this box).
+`docs/WAYBAR_MODULES.md`: left `workspaces/mode/scratchpad`, center `clock`, right `notification/tray/pulseaudio/kblayout/network/power-profiles/backlight/battery/power` — uses `custom/kblayout` (`kblayout.sh`, `jq` poll 0.25s), `network` (`wifi_menu.sh`, anchored dropdown), `pulseaudio` (`pavucontrol`); `mpd` is defined but disabled (no MPD server on this box).
 
 ## Fixes from Backup
 
@@ -184,8 +185,9 @@ Tune with `LOCK_WALLPAPER=/path.png` (force the lock image).
 ```sh
 sway -c ~/.config/sway/config --validate
 python3 -m json.tool ~/.config/waybar/config > /dev/null  # or use config.json
-python3 -m py_compile ~/.config/waybar/wifi_pass.py
+python3 -m py_compile ~/.config/waybar/wifi_pass.py ~/.local/bin/waybar-dropdown
 bash -n ~/.config/sway/status.sh ~/.config/waybar/*.sh
+printf 'A\nB\n' | ~/.local/bin/waybar-dropdown --dry-run  # menu shape without GUI
 ```
 
 License: MIT
