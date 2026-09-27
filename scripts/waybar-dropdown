@@ -12,27 +12,39 @@ Keys: Up/Down move, Enter chooses, Esc cancels; a click outside cancels too.
 Exit status: 0 = line chosen, 1 = cancelled, 2 = usage/unavailable.
 
 Usage: waybar-dropdown [--prompt TEXT] [--width N] [--margin-top N]
-                       [--margin-right N] [--max-lines N] [--password]
-                       [--anchor-cursor | --anchor-x N] [--dry-run]
+                       [--margin-bottom N] [--margin-right N] [--max-lines N]
+                       [--password] [--anchor-cursor | --anchor-x N]
+                       [--anchor-edge auto|top|bottom] [--dry-run]
 
 Options:
-  --anchor-cursor  drop down under the pointer, i.e. under the waybar button
-                   that was just clicked (centred on it, clamped to the
+  --anchor-cursor  drop down next to the pointer, i.e. next to the waybar
+                   button that was just clicked (centred on it, clamped to the
                    monitor). Position comes from XWayland/python-xlib; falls
                    back to the top-right corner when unavailable
+  --anchor-edge E  which screen edge the panel attaches to. auto (default):
+                   a click in the lower half of the screen means a bottom bar,
+                   so the panel opens *above* it; with no pointer position the
+                   waybar config's "position" decides
   --anchor-x N     explicit anchor x (testing / custom layouts)
+  --margin-top N      distance from the top screen edge (default 36)
+  --margin-bottom N   gap above a bottom bar (default 5; the bar's exclusive
+                      zone already moves the bottom edge up past the bar)
   --password   masked single-line entry instead of a list (prints the text)
   --dry-run    parse args/items and print the resolved config as JSON, no GUI
 """
 import argparse
 import json
+import os
+import re
 import sys
 import time
 
 ROW_HEIGHT = 34          # px; keep in sync with the CSS below
 MIN_WIDTH = 240
 MAX_WIDTH = 560
-DEFAULT_MARGIN_TOP = 36  # bar height (30) + border + small gap
+DEFAULT_MARGIN_TOP = 36     # below a top bar: 31 px bar + 5 px gap
+DEFAULT_MARGIN_BOTTOM = 5   # gap above the bar: waybar's exclusive zone already
+                            # lifts the bottom edge by the bar height (31 px)
 DEFAULT_MARGIN_RIGHT = 8
 
 CSS = b"""
@@ -81,6 +93,8 @@ def parse_args(argv):
     p.add_argument("--margin-right", type=int, default=DEFAULT_MARGIN_RIGHT)
     p.add_argument("--max-lines", type=int, default=10)
     p.add_argument("--password", action="store_true")
+    p.add_argument("--margin-bottom", type=int, default=None)
+    p.add_argument("--anchor-edge", choices=("auto", "top", "bottom"), default="auto")
     p.add_argument("--anchor-cursor", action="store_true")
     p.add_argument("--anchor-x", type=int, default=None)
     p.add_argument("--dry-run", action="store_true")
@@ -108,6 +122,18 @@ def cursor_position():
             dpy.close()
     except Exception:
         return None
+
+
+def waybar_position_bottom():
+    """True when the waybar config places the bar at the bottom edge."""
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    try:
+        with open(os.path.join(base, "waybar", "config"), encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        return False
+    match = re.search(r'"position"\s*:\s*"([a-z]+)"', text)
+    return bool(match) and match.group(1) == "bottom"
 
 
 def auto_width(items, prompt):
@@ -140,18 +166,36 @@ class Dropdown:
         LS = self.LS
         LS.init_for_window(self.win)
         LS.set_layer(self.win, LS.Layer.OVERLAY)
-        LS.set_anchor(self.win, LS.Edge.TOP, True)
-        self.anchor_x = args.anchor_x
-        if self.anchor_x is None and args.anchor_cursor:
-            pos = cursor_position()
-            self.anchor_x = pos[0] if pos else None
+
+        cursor = cursor_position() if (args.anchor_cursor or args.anchor_edge == "auto") else None
+        self.anchor_x = args.anchor_x if args.anchor_x is not None else (cursor[0] if cursor else None)
+        edge = args.anchor_edge
+        if edge == "auto":
+            if cursor:
+                mon = self.monitor_for(cursor[0], cursor[1])
+                geo = mon.get_geometry() if mon is not None else None
+                if (geo is not None and cursor[1] > geo.y + geo.height / 2) or \
+                        (geo is None and waybar_position_bottom()):
+                    edge = "bottom"
+                else:
+                    edge = "top"
+            else:
+                edge = "bottom" if waybar_position_bottom() else "top"
+        self.edge = edge
+        if edge == "bottom":
+            LS.set_anchor(self.win, LS.Edge.BOTTOM, True)
+            LS.set_margin(self.win, LS.Edge.BOTTOM, args.margin_bottom
+                          if args.margin_bottom is not None else DEFAULT_MARGIN_BOTTOM)
+        else:
+            LS.set_anchor(self.win, LS.Edge.TOP, True)
+            LS.set_margin(self.win, LS.Edge.TOP, args.margin_top)
         if self.anchor_x is not None:
             LS.set_anchor(self.win, LS.Edge.LEFT, True)
-            LS.set_margin(self.win, LS.Edge.LEFT, self.anchor_margin(self.anchor_x, width))
+            LS.set_margin(self.win, LS.Edge.LEFT,
+                          self.anchor_margin(self.anchor_x, width, cursor[1] if cursor else None))
         else:
             LS.set_anchor(self.win, LS.Edge.RIGHT, True)
             LS.set_margin(self.win, LS.Edge.RIGHT, args.margin_right)
-        LS.set_margin(self.win, LS.Edge.TOP, args.margin_top)
         LS.set_keyboard_mode(self.win, LS.KeyboardMode.EXCLUSIVE)
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -200,10 +244,15 @@ class Dropdown:
             Gdk.Screen.get_default(), provider,
             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
-    def anchor_margin(self, x, width):
-        """Left margin that centres the panel on x, clamped to the monitor."""
+    def monitor_for(self, x, y):
         display = self.Gdk.Display.get_default()
-        mon = display.get_monitor_at_point(x, self.args.margin_top) if display else None
+        if display is None:
+            return None
+        return display.get_monitor_at_point(x, max(0, int(y)))
+
+    def anchor_margin(self, x, width, y=None):
+        """Left margin that centres the panel on x, clamped to the monitor."""
+        mon = self.monitor_for(x, y if y is not None else self.args.margin_top)
         if mon is None:
             return max(8, x - width // 2)
         self.LS.set_monitor(self.win, mon)
@@ -303,6 +352,8 @@ def main():
             "margin_top": args.margin_top,
             "margin_right": args.margin_right,
             "anchor": anchor,
+            "anchor_edge": args.anchor_edge,
+            "waybar_position_bottom": waybar_position_bottom(),
             "cursor": list(cursor) if cursor else None,
             "items": items,
         }, ensure_ascii=False, indent=2))

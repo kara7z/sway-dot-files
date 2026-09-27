@@ -57,7 +57,7 @@ Global: `height 30:3`, `spacing 4:7`
 - Exec `/config/waybar/kblayout.sh:193`: `jq` poll every 0.25s (python3 at 0.1s measured 31ms/tick ≈ 30% of a CPU core; now 3.8ms/tick ≈ 1.5%), single-instance takeover via pidfile (`pkill waybar` can orphan the old copy), `format "{}":192`, click `xkb_switch_layout next:194` — style `361` `border-left white 1px`
 
 ### network `waybar/config:150`
-- Click `wifi_menu.sh:164` → `waybar-dropdown` drops **under the clicked network module** (XWayland pointer query, clamped to the monitor): cached AP list (`nmcli … --rescan no`, ~7 ms vs ~2.8 s rescan), strength icons `:159` (wifi_strength_1→4, low→high), password prompt + 3 tries + notifications; wifi `"{essid} ({signal}%) {icon}":158`, disconnected `"Disconnected ⚠":163`
+- Click `wifi_menu.sh:164` → `waybar-dropdown` opens **above the bar, under the clicked network module** (the bar sits at the bottom; edge auto-detected, XWayland pointer query, clamped to the monitor): cached AP list (`nmcli … --rescan no`, ~7 ms vs ~2.8 s rescan), strength icons `:159` (wifi_strength_1→4, low→high), password prompt + 3 tries + notifications; wifi `"{essid} ({signal}%) {icon}":158`, disconnected `"Disconnected ⚠":163`
 - Styling `209`: base `border-left/right white 1px:214`, disconnected `bg rgba(255,0,0,0.22):220`
 
 ### power-profiles-daemon `139` — verified working 2026-09-24 (D-Bus service `net.hadess.PowerProfiles`; its binary is not in `$PATH`, that is normal)
@@ -94,7 +94,7 @@ Global: `height 30:3`, `spacing 4:7`
 
 - `kblayout.sh` — prints US/AR/FR (`jq` 0.25s poll, was `python3` @0.1s ≈ 30% of a CPU core), `wofi` popup 200×50 centered auto-killed after 1s, kills any previous instance on start
 - `wifi_menu.sh` — cached `nmcli dev wifi list --rescan no` (~7 ms; plain `dev wifi` rescans → ~2.8 s), dedup `awk !seen` (connected first), strength icons, `waybar-dropdown` (no rofi/wofi), password retry x3 + `notify-send`, toggle lock in `$XDG_RUNTIME_DIR` + `pkill -P` child cleanup
-- `waybar-dropdown` (`~/.local/bin`) — python3 + GTK3 + `gtk-layer-shell` dropdown that drops **under the clicked bar button** (`--anchor-cursor`: XWayland `XQueryPointer` via python-xlib; `--anchor-x N` for tests), top margin 36, 0.6 s map grace so focus races cannot cancel it; dmenu-style stdin→stdout, `--password`, `--dry-run`
+- `waybar-dropdown` (`~/.local/bin`) — python3 + GTK3 + `gtk-layer-shell` dropdown next to the clicked bar button (`--anchor-cursor`: XWayland `XQueryPointer` via python-xlib; `--anchor-x N` for tests). Edge auto: click in the lower half → panel **above the bottom bar** (5 px gap — the bar's exclusive zone already lifts the layer edge past it); pixel-verified with grim (cursor 500→span 380..619, 1500→1380..1619, power button 1700→1580..1819, all row 1164). `--anchor-edge`/`--margin-top`/`--margin-bottom` override; 0.6 s map grace so focus races cannot cancel it; dmenu-style stdin→stdout, `--password`, `--dry-run`
 - `wifi_pass.py:106` — legacy GTK3 dialog, kept for reference (superseded by `waybar-dropdown --password`)
 - `power_menu.sh` — anchored dropdown: Lock, Suspend, Hibernate (only with disk-backed swap — zram-only boxes hide it), Logout, Reboot, Shutdown; `systemctl --no-ask-password` + failure notification; click again closes
 - `mediaplayer.py:45` — `playerctl metadata` → JSON `{"text":"artist - title"}` loop 1s
