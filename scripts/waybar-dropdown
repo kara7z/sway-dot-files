@@ -13,15 +13,21 @@ Exit status: 0 = line chosen, 1 = cancelled, 2 = usage/unavailable.
 
 Usage: waybar-dropdown [--prompt TEXT] [--width N] [--margin-top N]
                        [--margin-right N] [--max-lines N] [--password]
-                       [--dry-run]
+                       [--anchor-cursor | --anchor-x N] [--dry-run]
 
 Options:
+  --anchor-cursor  drop down under the pointer, i.e. under the waybar button
+                   that was just clicked (centred on it, clamped to the
+                   monitor). Position comes from XWayland/python-xlib; falls
+                   back to the top-right corner when unavailable
+  --anchor-x N     explicit anchor x (testing / custom layouts)
   --password   masked single-line entry instead of a list (prints the text)
   --dry-run    parse args/items and print the resolved config as JSON, no GUI
 """
 import argparse
 import json
 import sys
+import time
 
 ROW_HEIGHT = 34          # px; keep in sync with the CSS below
 MIN_WIDTH = 240
@@ -75,12 +81,33 @@ def parse_args(argv):
     p.add_argument("--margin-right", type=int, default=DEFAULT_MARGIN_RIGHT)
     p.add_argument("--max-lines", type=int, default=10)
     p.add_argument("--password", action="store_true")
+    p.add_argument("--anchor-cursor", action="store_true")
+    p.add_argument("--anchor-x", type=int, default=None)
     p.add_argument("--dry-run", action="store_true")
     return p.parse_args(argv)
 
 
 def load_items():
     return [line.rstrip("\n") for line in sys.stdin if line.rstrip("\n") != ""]
+
+
+def cursor_position():
+    """Pointer position in compositor coordinates, queried via XWayland.
+
+    Wayland has no global pointer query; XWayland's root window mirrors the
+    whole layout, so XQueryPointer returns exactly where the click happened.
+    Returns None when XWayland / python-xlib is unavailable.
+    """
+    try:
+        from Xlib import display as xdisplay
+        dpy = xdisplay.Display()
+        try:
+            p = dpy.screen().root.query_pointer()
+            return int(p.root_x), int(p.root_y)
+        finally:
+            dpy.close()
+    except Exception:
+        return None
 
 
 def auto_width(items, prompt):
@@ -101,6 +128,7 @@ class Dropdown:
         self.selected = 0
         self.done = False
         self.had_focus = False
+        self.map_time = 0.0
         self.result = None
 
         width = args.width or auto_width(items, args.prompt)
@@ -113,9 +141,17 @@ class Dropdown:
         LS.init_for_window(self.win)
         LS.set_layer(self.win, LS.Layer.OVERLAY)
         LS.set_anchor(self.win, LS.Edge.TOP, True)
-        LS.set_anchor(self.win, LS.Edge.RIGHT, True)
+        self.anchor_x = args.anchor_x
+        if self.anchor_x is None and args.anchor_cursor:
+            pos = cursor_position()
+            self.anchor_x = pos[0] if pos else None
+        if self.anchor_x is not None:
+            LS.set_anchor(self.win, LS.Edge.LEFT, True)
+            LS.set_margin(self.win, LS.Edge.LEFT, self.anchor_margin(self.anchor_x, width))
+        else:
+            LS.set_anchor(self.win, LS.Edge.RIGHT, True)
+            LS.set_margin(self.win, LS.Edge.RIGHT, args.margin_right)
         LS.set_margin(self.win, LS.Edge.TOP, args.margin_top)
-        LS.set_margin(self.win, LS.Edge.RIGHT, args.margin_right)
         LS.set_keyboard_mode(self.win, LS.KeyboardMode.EXCLUSIVE)
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -163,6 +199,17 @@ class Dropdown:
         Gtk.StyleContext.add_provider_for_screen(
             Gdk.Screen.get_default(), provider,
             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+    def anchor_margin(self, x, width):
+        """Left margin that centres the panel on x, clamped to the monitor."""
+        display = self.Gdk.Display.get_default()
+        mon = display.get_monitor_at_point(x, self.args.margin_top) if display else None
+        if mon is None:
+            return max(8, x - width // 2)
+        self.LS.set_monitor(self.win, mon)
+        geo = mon.get_geometry()
+        left = min(x - width // 2, geo.x + geo.width - width - 8)
+        return int(max(left, geo.x + 8))
 
     def apply_selection(self):
         for idx, row in enumerate(self.rows):
@@ -218,7 +265,10 @@ class Dropdown:
         return False
 
     def on_focus_out(self, *_a):
-        if self.had_focus:
+        # Ignore focus transitions that happen while the panel is still being
+        # mapped (other layer surfaces coming and going): only a real
+        # "clicked somewhere else" after the grace period closes the menu.
+        if self.had_focus and time.monotonic() - self.map_time > 0.6:
             self.finish(1, None)
         return False
 
@@ -230,6 +280,7 @@ class Dropdown:
 
     def run(self):
         self.win.show_all()
+        self.map_time = time.monotonic()
         if self.args.password:
             self.entry.grab_focus()
         self.Gtk.main()
@@ -241,6 +292,9 @@ def main():
     items = load_items()
 
     if args.dry_run:
+        cursor = cursor_position() if args.anchor_cursor else None
+        anchor = (f"x={args.anchor_x}" if args.anchor_x is not None
+                  else "cursor" if args.anchor_cursor else "top-right")
         print(json.dumps({
             "mode": "password" if args.password else "list",
             "prompt": args.prompt,
@@ -248,6 +302,8 @@ def main():
             "max_lines": args.max_lines,
             "margin_top": args.margin_top,
             "margin_right": args.margin_right,
+            "anchor": anchor,
+            "cursor": list(cursor) if cursor else None,
             "items": items,
         }, ensure_ascii=False, indent=2))
         return 0

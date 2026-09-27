@@ -40,7 +40,7 @@ sway-dot-files/
 │   ├── sway-idle-lock      # one swayidle: lock 5 min, outputs off 10 min, lock before sleep
 │   ├── sway-lock           # lock now: classic wallpaper lock (shared by idle/before-sleep/Super+L)
 │   ├── sway-brightness     # Fn keys + waybar scroll: 2% steps, clamped to 1%..100%
-│   ├── waybar-dropdown     # anchored dropdown menu (gtk-layer-shell) for power/wifi buttons
+│   ├── waybar-dropdown     # dropdown under the clicked power/wifi button (gtk-layer-shell)
 │   ├── sway-game-unstick   # unstick a frozen fullscreen game (Super+G: fullscreen off/on)
 │   ├── sway-game-freeze-daemon # auto-detect & auto-unstick frozen game frames in background
 │   ├── sway-gamepad-idle-guard # no idle lock while a gamepad is used (evdev -> inhibit_idle)

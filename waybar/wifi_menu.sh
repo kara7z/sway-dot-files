@@ -1,17 +1,17 @@
 #!/bin/sh
 # Portable — uses $HOME (no hardcoded user path)
-# Anchored dropdown menu (no rofi/wofi): waybar-dropdown, see scripts/
+# Anchored dropdown (no rofi/wofi): waybar-dropdown drops under the clicked module
 DROPDOWN="${DROPDOWN:-$HOME/.local/bin/waybar-dropdown}"
 LOCK="${XDG_RUNTIME_DIR:-/tmp}/waybar-wifi-menu.lock"
 
 # Small action menu helper: ask <prompt> <lines>  (items on stdin)
 ask() {
-    "$DROPDOWN" --width 300 --prompt "$1" --max-lines "$2"
+    "$DROPDOWN" --anchor-cursor --width 300 --prompt "$1" --max-lines "$2"
 }
 
 # Masked password prompt (dropdown entry)
 ask_password() {
-    "$DROPDOWN" --password --prompt "Password for $1"
+    "$DROPDOWN" --anchor-cursor --password --prompt "Password for $1"
 }
 
 # Toggle: a second click on the waybar network icon closes the open menu
@@ -74,7 +74,7 @@ width=$((maxlen * 10 + 40))
 lines=$count
 [ "$lines" -gt 12 ] && lines=12     # cap the height, scroll the rest
 
-chosen=$(printf '%s\n' "$list" | "$DROPDOWN" \
+chosen=$(printf '%s\n' "$list" | "$DROPDOWN" --anchor-cursor \
     --width "$width" --prompt "WiFi" --max-lines "$lines")
 
 [ -z "$chosen" ] && exit 0

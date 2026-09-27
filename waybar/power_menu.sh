@@ -1,5 +1,5 @@
 #!/bin/sh
-# Power menu for the waybar custom/power button (anchored dropdown, no rofi/wofi).
+# Power menu for the waybar custom/power button (anchored dropdown under the button).
 # Order: Lock, Suspend, Hibernate, Logout, Reboot, Shutdown (least to most
 # destructive). Clicking the button again while the menu is open closes it.
 # Hibernate is shown only when the box can really do it (needs a disk-backed
@@ -41,7 +41,7 @@ fi
 
 menu="󰌾 Lock\n󰒼 Suspend\n${hibernate}󰌋 Logout\n󰋜 Reboot\n󰆑 Shutdown"
 
-chosen=$(printf '%b' "$menu" | "$DROPDOWN")
+chosen=$(printf '%b' "$menu" | "$DROPDOWN" --anchor-cursor)
 
 fail() {
     notify-send -a power-menu -u critical "Power menu" "$1"
