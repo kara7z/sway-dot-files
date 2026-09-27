@@ -122,8 +122,8 @@
         // "device": "acpi_video1",
         "format": "{percent}% {icon}",
         "format-icons": ["", "", "", "", ""],
-        "on-scroll-up": "brightnessctl set 5%+",
-        "on-scroll-down": "brightnessctl set 5%-",
+        "on-scroll-up": "~/.local/bin/sway-brightness up",
+        "on-scroll-down": "~/.local/bin/sway-brightness down",
         "min": 5
     },
     "battery": {

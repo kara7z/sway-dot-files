@@ -65,6 +65,7 @@ Global: `height 30:3`, `spacing 4:7`
 
 ### backlight `115`
 - Device auto, `format "{percent}% {icon}":117`, icons moon/sun `["",""]:118`, hover yellow `rgba(255,255,0,0.22):200`
+- Scroll up/down `125/126`: `~/.local/bin/sway-brightness up|down` — 2% steps, floor 1% (never blanks the panel)
 
 ### battery `123`
 - `warning 30:126`, `critical 15:127`, formats `"{capacity}% {icon}":129`, charging `"{capacity}% ":131`

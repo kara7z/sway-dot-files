@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# sway-brightness — raise/lower the screen backlight in 2% steps (sway Fn keys,
+# waybar scroll), clamped to the panel range [1%, 100%]: it never drops to 0%
+# (backlight fully off looks like a dead screen) and never exceeds the maximum.
+#
+# Usage: sway-brightness up|down
+# Env:   STEP_PERCENT=2   step size per press
+#        MIN_PERCENT=1    floor, as a percentage of the panel maximum
+# Used by: ~/.config/sway/config (XF86MonBrightnessUp/Down) and
+#          ~/.config/waybar/config (backlight module on-scroll-up/down).
+set -euo pipefail
+
+STEP_PERCENT="${STEP_PERCENT:-2}"
+MIN_PERCENT="${MIN_PERCENT:-1}"
+
+for v in "$STEP_PERCENT" "$MIN_PERCENT"; do
+  [[ "$v" =~ ^[0-9]+$ ]] || { echo "sway-brightness: STEP_PERCENT/MIN_PERCENT must be integers" >&2; exit 2; }
+done
+
+max=$(brightnessctl max) || { echo "sway-brightness: no backlight device found" >&2; exit 1; }
+cur=$(brightnessctl get) || { echo "sway-brightness: cannot read current brightness" >&2; exit 1; }
+
+min=$(( max * MIN_PERCENT / 100 ))     # floor: 1% of max by default
+delta=$(( max * STEP_PERCENT / 100 ))  # one press = 2% of max by default
+
+case "${1:-}" in
+  up)   target=$(( cur + delta )) ;;
+  down) target=$(( cur - delta )) ;;
+  -h|--help)
+    sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
+    exit 0
+    ;;
+  *)
+    echo "usage: ${0##*/} up|down" >&2
+    exit 2
+    ;;
+esac
+
+# Clamp into [min, max] — holding Fn+down stops at 1%, it never blanks the panel.
+if (( target < min )); then target=$min; fi
+if (( target > max )); then target=$max; fi
+
+brightnessctl set "$target"

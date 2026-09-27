@@ -1,0 +1,57 @@
+#!/bin/bash
+# sway-game-unstick — unstick a frozen fullscreen game view, then leave sway alone.
+#
+# Call from the $mod2+g binding in sway/config (or run it by hand):
+#   sway-game-unstick [--dry-run]
+#
+# What it does (harmless on a healthy window):
+#   * reads the focused container from sway's tree,
+#   * if the view is fullscreen: leaves fullscreen, waits 0.3 s, re-enters it,
+#   * otherwise: enters fullscreen, waits 0.3 s, leaves it again (some
+#     borderless-maximized Proton windows never set the fullscreen flag).
+# That is the same operation as leaving/entering fullscreen by hand: it makes
+# sway re-attach the view's buffers without touching the game process.
+# It never kills, moves, or resizes anything else. It also leaves the idle
+# state alone (the gamepad inhibit rules are focus-based, so they survive it).
+set -u
+
+DRY_RUN=false
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run) DRY_RUN=true ;;
+    -h|--help)
+      sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0 ;;
+    *) echo "sway-game-unstick: unknown argument: $arg" >&2; exit 2 ;;
+  esac
+done
+
+say() { echo "sway-game-unstick: $*"; }
+run() {
+  if $DRY_RUN; then
+    printf 'sway-game-unstick: would run:'; printf ' %q' "$@"; printf '\n'
+  else
+    "$@" >/dev/null
+  fi
+}
+nap() { $DRY_RUN || sleep 0.3; }
+
+view=$(swaymsg -t get_tree 2>/dev/null | jq -c \
+  '[.. | objects | select(.focused? == true and (.type? == "con" or .type? == "floating_con"))][0] // empty')
+[ -n "$view" ] || { say "no focused window"; exit 1; }
+con_id=$(printf '%s' "$view" | jq -r '.id')
+was_fullscreen=$(printf '%s' "$view" | jq -r '.fullscreen_mode // 0')
+say "focused view $con_id (was fullscreen: $was_fullscreen)"
+
+if [ "$was_fullscreen" = "1" ]; then
+  run swaymsg "[con_id=$con_id] fullscreen disable"
+  nap
+  run swaymsg "[con_id=$con_id] fullscreen enable"
+  say "fullscreen toggled off/on for view $con_id"
+else
+  run swaymsg "[con_id=$con_id] fullscreen enable"
+  nap
+  run swaymsg "[con_id=$con_id] fullscreen disable"
+  say "non-fullscreen view $con_id cycled enable/disable"
+fi
+

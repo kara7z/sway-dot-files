@@ -1,0 +1,407 @@
+#!/usr/bin/env python3
+"""sway-game-freeze-daemon - automatically detect and unstick frozen game frames in SwayFX.
+
+Problem:
+--------
+In SwayFX with XWayland/Proton games, when direct scanout or scene damage stalls,
+the game picture stops updating completely while game audio and inputs continue.
+
+Solution:
+---------
+1. Listens to Sway IPC events for window focus & fullscreen state.
+2. Monitors connected gamepad input events.
+3. If user is actively playing (gamepad events occurring) but screen
+   pixels remain completely static for > 2 seconds, it automatically cycles
+   fullscreen to unstick the compositor render pipeline instantly!
+4. Zero overhead: tiny 64x64 sample (<0.03s), only checks when a game is fullscreen.
+5. Single-instance protection with flock & PID takeover on sway reload.
+"""
+
+from __future__ import annotations
+
+import fcntl
+import json
+import os
+import re
+import select
+import signal
+import struct
+import subprocess
+import sys
+import threading
+import time
+import i3ipc
+
+LOG_PREFIX = "sway-game-freeze-daemon"
+RUNTIME_DIR = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
+PIDFILE = os.path.join(RUNTIME_DIR, "sway-game-freeze-daemon.pid")
+LOCKFILE = os.path.join(RUNTIME_DIR, "sway-game-freeze-daemon.lock")
+
+EV_KEY, EV_ABS = 0x01, 0x03
+ABS_MAX = 0x3F
+DEADZONE = 0.08
+EVENT = struct.Struct("llHHi")
+
+def log(msg):
+    print(f"{LOG_PREFIX}: {msg}", file=sys.stderr, flush=True)
+
+def is_game(con):
+    if not con:
+        return False
+    w_class = getattr(con, 'window_class', None) or ''
+    app_id = getattr(con, 'app_id', None) or ''
+    target = f"{w_class} {app_id}".lower()
+    return any(k in target for k in ['steam_app_', '.exe', 'gamescope', 'minecraft', 'lutris', 'heroic'])
+
+def discover_gamepads():
+    found = {}
+    try:
+        with open("/proc/bus/input/devices", encoding="utf-8", errors="replace") as fh:
+            raw = fh.read()
+    except OSError:
+        return found
+    for block in raw.strip().split("\n\n"):
+        name = ""
+        handlers = []
+        for line in block.splitlines():
+            if line.startswith("N: Name="):
+                name = line.split("=", 1)[1].strip().strip('"')
+            elif line.startswith("H: Handlers="):
+                handlers = line.split("=", 1)[1].split()
+        if not any(re.fullmatch(r"js\d+", h) for h in handlers):
+            continue
+        for handler in handlers:
+            if re.fullmatch(r"event\d+", handler):
+                found[f"/dev/input/{handler}"] = name
+    return found
+
+def _ioctl_read(fd, request, size):
+    buffer = bytearray(size)
+    try:
+        fcntl.ioctl(fd, request, buffer, True)
+    except OSError:
+        return None
+    return bytes(buffer)
+
+def _eviocgbit(fd, ev_type, nbytes=8):
+    return _ioctl_read(fd, 0x80000000 | (nbytes << 16) | (ord("E") << 8) | (0x20 + ev_type), nbytes)
+
+def _eviocgabs(fd, axis):
+    data = _ioctl_read(fd, 0x80000000 | (24 << 16) | (ord("E") << 8) | (0x40 + axis), 24)
+    return struct.unpack("iiiiii", data) if data else None
+
+class Pad:
+    def __init__(self, path, name):
+        self.path = path
+        self.name = name
+        self.fd = -1
+        self.axes = {}
+        self.dead = False
+        self.buffer = b""
+
+    def open(self):
+        try:
+            self.fd = os.open(self.path, os.O_RDONLY | os.O_NONBLOCK)
+        except OSError:
+            return False
+        bits = _eviocgbit(self.fd, EV_ABS)
+        for axis in range(ABS_MAX + 1):
+            if not bits or not (bits[axis // 8] & (1 << (axis % 8))):
+                continue
+            info = _eviocgabs(self.fd, axis)
+            if not info:
+                continue
+            value, minimum, maximum, fuzz, flat, _ = info
+            threshold = max(int(abs(maximum - minimum) * DEADZONE), fuzz, flat, 1)
+            self.axes[axis] = (value, threshold)
+        return True
+
+    def close(self):
+        if self.fd >= 0:
+            try:
+                os.close(self.fd)
+            except OSError:
+                pass
+        self.fd = -1
+
+    def poll(self):
+        activity = False
+        while True:
+            try:
+                chunk = os.read(self.fd, EVENT.size * 64)
+            except BlockingIOError:
+                break
+            except OSError:
+                self.dead = True
+                break
+            if not chunk:
+                self.dead = True
+                break
+            self.buffer += chunk
+            while len(self.buffer) >= EVENT.size:
+                _, _, etype, code, value = EVENT.unpack_from(self.buffer, 0)
+                self.buffer = self.buffer[EVENT.size:]
+                if etype == EV_KEY:
+                    activity = True
+                elif etype == EV_ABS:
+                    rest = self.axes.get(code)
+                    if rest is None or abs(value - rest[0]) > rest[1]:
+                        activity = True
+        return activity
+
+
+class GameFreezeWatcher:
+    def __init__(self):
+        self.conn = i3ipc.Connection()
+        self.running = True
+        self.active_game_id = None
+        self.last_unstick_time = 0
+        self.last_gamepad_activity = 0.0
+        self.pads = {}
+        self.lock = threading.Lock()
+
+    def check_focused(self):
+        tree = self.conn.get_tree()
+        focused = tree.find_focused()
+        if focused and is_game(focused) and getattr(focused, 'fullscreen_mode', 0) == 1:
+            return focused.id
+        return None
+
+    def unstick(self, con_id):
+        now = time.time()
+        # Cooldown: at most once every 6 seconds
+        if now - self.last_unstick_time < 6.0:
+            return
+        self.last_unstick_time = now
+        log(f"Auto-unsticking frozen game container {con_id}")
+        self.conn.command(f"[con_id={con_id}] fullscreen disable")
+        time.sleep(0.15)
+        self.conn.command(f"[con_id={con_id}] fullscreen enable")
+        log(f"Game container {con_id} restored.")
+
+    def run_gamepad_listener(self):
+        last_scan = 0
+        while self.running:
+            now = time.monotonic()
+            if now - last_scan >= 5.0:
+                last_scan = now
+                devs = discover_gamepads()
+                for p, n in devs.items():
+                    if p not in self.pads or self.pads[p].dead:
+                        if p in self.pads:
+                            self.pads[p].close()
+                        cand = Pad(p, n)
+                        if cand.open():
+                            self.pads[p] = cand
+                for p, pad in list(self.pads.items()):
+                    if p not in devs:
+                        pad.close()
+                        del self.pads[p]
+
+            fds = [pad.fd for pad in self.pads.values() if pad.fd >= 0 and not pad.dead]
+            if not fds:
+                time.sleep(1.0)
+                continue
+
+            try:
+                readable, _, _ = select.select(fds, [], [], 1.0)
+            except (OSError, ValueError):
+                readable = []
+
+            if readable:
+                act = False
+                for pad in self.pads.values():
+                    if pad.fd in readable and pad.poll():
+                        act = True
+                if act:
+                    self.last_gamepad_activity = time.time()
+
+    def capture_region(self):
+        """A 64x64 patch centred on the focused output, as a grim -g string.
+
+        Computed from sway's live geometry instead of a hardcoded X/Y, so the
+        freeze check keeps working after a resolution/scale change. A hardcoded
+        "928,568 64x64" silently returned rc=1 ("supplied geometry did not
+        intersect with any outputs") once the region fell off-screen, which
+        turned the whole freeze check into a no-op with no error surfaced.
+        """
+        try:
+            res = subprocess.run(["swaymsg", "-t", "get_outputs"],
+                                 capture_output=True, text=True, timeout=2.0)
+            outputs = json.loads(res.stdout) if res.returncode == 0 else []
+        except (OSError, ValueError, subprocess.SubprocessError):
+            outputs = []
+
+        rect = None
+        for out in outputs:
+            if not out.get("active"):
+                continue
+            r = out.get("rect") or {}
+            if r.get("width") and r.get("height"):
+                rect = r
+                break
+        if not rect:
+            return None
+
+        size = 64
+        w, h = rect["width"], rect["height"]
+        if w < size or h < size:
+            return None
+        x = rect["x"] + (w - size) // 2
+        y = rect["y"] + (h - size) // 2
+        return f"{x},{y} {size}x{size}"
+
+    def run_freeze_checker(self):
+        last_sig = None
+        same_count = 0
+        region = None
+
+        while self.running:
+            time.sleep(1.0)
+            with self.lock:
+                gid = self.active_game_id
+
+            if not gid:
+                last_sig = None
+                same_count = 0
+                region = None
+                continue
+
+            # Only check if there's been recent controller activity (within last 30s)
+            has_pads = bool(self.pads)
+            if has_pads and (time.time() - self.last_gamepad_activity > 30.0):
+                last_sig = None
+                same_count = 0
+                continue
+
+            if region is None:
+                region = self.capture_region()
+                if region is None:
+                    same_count = 0
+                    continue
+
+            # Capture a small 64x64 center patch with grim (<0.03s)
+            try:
+                res = subprocess.run(
+                    ["grim", "-g", region, "-t", "ppm", "-"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    timeout=1.0
+                )
+                if res.returncode == 0 and res.stdout:
+                    sig = hash(res.stdout)
+                    if sig == last_sig:
+                        same_count += 1
+                        # 3 consecutive seconds of static frame while user is actively playing
+                        if same_count >= 3:
+                            tree = self.conn.get_tree()
+                            focused = tree.find_focused()
+                            if focused and focused.id == gid and getattr(focused, 'fullscreen_mode', 0) == 1:
+                                self.unstick(gid)
+                            same_count = 0
+                            last_sig = None
+                    else:
+                        same_count = 0
+                        last_sig = sig
+                else:
+                    # grim failed (region off-screen, output gone, ...):
+                    # drop the cached region so it is recomputed next tick
+                    # instead of retrying the same dead geometry forever.
+                    if res.returncode != 0:
+                        region = None
+                    same_count = 0
+            except Exception:
+                region = None
+                same_count = 0
+
+    def on_window(self, conn, event):
+        with self.lock:
+            self.active_game_id = self.check_focused()
+
+    def start(self):
+        with self.lock:
+            self.active_game_id = self.check_focused()
+
+        pad_t = threading.Thread(target=self.run_gamepad_listener, daemon=True)
+        pad_t.start()
+
+        checker_t = threading.Thread(target=self.run_freeze_checker, daemon=True)
+        checker_t.start()
+
+        self.conn.on("window::focus", self.on_window)
+        self.conn.on("window::fullscreen_mode", self.on_window)
+        self.conn.on("window::close", self.on_window)
+
+        try:
+            self.conn.main()
+        except Exception:
+            pass
+
+    def stop(self, *args):
+        self.running = False
+        try:
+            self.conn.main_quit()
+        except Exception:
+            pass
+        sys.exit(0)
+
+
+def _terminate_previous():
+    try:
+        with open(PIDFILE, encoding="utf-8") as fh:
+            pid = int(fh.read().strip())
+    except (OSError, ValueError):
+        return
+    if pid <= 0 or pid == os.getpid():
+        return
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as fh:
+            cmdline = fh.read().decode("utf-8", "replace")
+    except OSError:
+        return
+    if LOG_PREFIX in cmdline:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+
+def acquire_single_instance():
+    lock_fd = os.open(LOCKFILE, os.O_WRONLY | os.O_CREAT, 0o600)
+    deadline = time.monotonic() + 5.0
+    while True:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except OSError:
+            _terminate_previous()
+            if time.monotonic() >= deadline:
+                os.close(lock_fd)
+                return None
+            time.sleep(0.25)
+    with open(PIDFILE, "w", encoding="utf-8") as fh:
+        fh.write(f"{os.getpid()}\n")
+    return lock_fd
+
+def main():
+    lock_fd = acquire_single_instance()
+    if lock_fd is None:
+        log("another instance is already running - exiting")
+        return 0
+
+    watcher = GameFreezeWatcher()
+    signal.signal(signal.SIGINT, watcher.stop)
+    signal.signal(signal.SIGTERM, watcher.stop)
+
+    try:
+        watcher.start()
+    finally:
+        try:
+            with open(PIDFILE, encoding="utf-8") as fh:
+                if int(fh.read().strip() or 0) == os.getpid():
+                    os.remove(PIDFILE)
+        except (OSError, ValueError):
+            pass
+        os.close(lock_fd)
+
+if __name__ == "__main__":
+    main()

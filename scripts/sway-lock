@@ -1,0 +1,91 @@
+#!/bin/bash
+# sway-lock — lock the session now (shared by the Super+L binding, the idle
+# timeout and before-sleep, like the previous look).
+#
+# Look (classic): current wallpaper shown full-screen, then swaylock's default
+# minimal prompt. No clock/date, no baked hint, and no ~/.config/swaylock/config
+# theme (that file is intentionally absent so swaylock uses its defaults).
+#
+# Usage: sway-lock [--dry-run] [--print-wallpaper]
+#   --dry-run         print the exact swaylock command, do not lock
+#   --print-wallpaper print the wallpaper that would be used, then exit 0
+# Env: LOCK_WALLPAPER=/path.png (force the fallback image)
+set -u
+
+DRY_RUN=false
+PRINT_WALLPAPER=false
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run) DRY_RUN=true ;;
+    --print-wallpaper) PRINT_WALLPAPER=true ;;
+    -h|--help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "sway-lock: unknown argument: $arg" >&2; exit 2 ;;
+  esac
+done
+
+say() { echo "sway-lock: $*"; }
+
+# --- classic wallpaper (same source order as before the custom look) -----------
+resolve_wallpaper() {
+  # 1. explicit override
+  if [ -n "${LOCK_WALLPAPER:-}" ] && [ -f "$LOCK_WALLPAPER" ]; then
+    printf '%s' "$LOCK_WALLPAPER"
+    return 0
+  fi
+  # 2. whatever awww is showing right now
+  local img
+  img=$(awww query 2>/dev/null | grep -oE 'image: [^ ,]+' | head -1 | cut -d' ' -f2)
+  if [ -n "$img" ] && [ -f "$img" ]; then
+    printf '%s' "$img"
+    return 0
+  fi
+  # 3. waypaper's configured wallpaper
+  local cfg="$HOME/.config/waypaper/config.ini" w
+  if [ -f "$cfg" ]; then
+    w=$(grep -E '^[[:space:]]*wallpaper[[:space:]]*=' "$cfg" | head -1 | cut -d'=' -f2- | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    case "$w" in "~"/*) w="$HOME/${w#\~/}" ;; esac
+    if [ -n "$w" ] && [ -f "$w" ]; then
+      printf '%s' "$w"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+WALL=""
+if WALL=$(resolve_wallpaper); then
+  LOCK_CMD=(swaylock -f -i "$WALL" -s fill)
+else
+  say "no wallpaper found — black lock screen"
+  LOCK_CMD=(swaylock -f -c 000000)
+fi
+
+if $PRINT_WALLPAPER; then
+  [ -n "$WALL" ] && printf '%s\n' "$WALL"
+  exit 0
+fi
+
+if $DRY_RUN; then
+  printf 'sway-lock: would run:'; printf ' %q' "${LOCK_CMD[@]}"; printf '\n'
+  exit 0
+fi
+
+# --- single instance -----------------------------------------------------------
+# flock is authoritative: two callers in the same millisecond (e.g. the idle
+# timeout and Super+L) would both pass a bare pgrep check and stack two locks.
+LOCKFILE="${XDG_RUNTIME_DIR:-/tmp}/sway-lock.lock"
+if command -v flock >/dev/null 2>&1; then
+  exec 9>"$LOCKFILE"
+  if ! flock -n 9 2>/dev/null; then
+    say "another sway-lock is already running — nothing to do"
+    exit 0
+  fi
+fi
+
+# --- don't stack lockers -------------------------------------------------------
+if pgrep -x swaylock >/dev/null 2>&1; then
+  say "session is already locked — nothing to do"
+  exit 0
+fi
+
+exec "${LOCK_CMD[@]}" >/dev/null    # stdout closed: never hold a caller's pipe open

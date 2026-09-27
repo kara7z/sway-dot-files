@@ -37,6 +37,12 @@ sway-dot-files/
 │   ├── sway-display-toggle # $mod+p: duplicate screen on external (SHM wl-mirror)
 │   ├── sway-wl-mirror-toggle # legacy alias -> sway-display-toggle --software-only
 │   ├── sway-mirror-1080p   # legacy alias -> sway-display-toggle --software-only
+│   ├── sway-idle-lock      # one swayidle: lock 5 min, outputs off 10 min, lock before sleep
+│   ├── sway-lock           # lock now: classic wallpaper lock (shared by idle/before-sleep/Super+L)
+│   ├── sway-brightness     # Fn keys + waybar scroll: 2% steps, clamped to 1%..100%
+│   ├── sway-game-unstick   # unstick a frozen fullscreen game (Super+G: fullscreen off/on)
+│   ├── sway-game-freeze-daemon # auto-detect & auto-unstick frozen game frames in background
+│   ├── sway-gamepad-idle-guard # no idle lock while a gamepad is used (evdev -> inhibit_idle)
 │   └── workspace-swipe     # 3-finger swipe
 ├── deps/pacman.txt         # pacman -Q list
 ├── docs/
@@ -99,7 +105,9 @@ sudo pacman -S stow
 | `Alt+minus/Shift+minus` | scratchpad show/move | `219` |
 | `Alt+r` | resize mode (h/j/k/l) | `227` |
 | `Super+space` | xkb switch US/AR | `132` |
-| `XF86Audio*` `XF86MonBrightness*` | pactl/playerctl/brightnessctl | `252/265` |
+| `Super+L` | lock the screen now (`~/.local/bin/sway-lock`: classic wallpaper lock) | `196` |
+| `Super+G` | unstick a frozen fullscreen game (toggle fullscreen off/on on the focused window) | `199` |
+| `XF86Audio*` `XF86MonBrightness*` | pactl/playerctl/`sway-brightness` (2% step, 1% floor) | `252/265` |
 | `Alt+p` (or `XF86Display`) | duplicate the main screen on the connected external (toggle) | `271/276` |
 | `Print` | grim | `280` |
 | `3-finger swipe` | workspace prev/next | `100` |
@@ -122,6 +130,54 @@ sudo pacman -S stow
 
 - `exec export QT_QPA_PLATFORMTHEME=qt6ct:305` → `systemctl --user set-environment` + `dbus-update-activation-environment` (`sway/config:307`)
 - Added `include ~/.config/sway/outputs:291` before system include
+
+## Idle Lock & Gamepads
+
+`scripts/sway-idle-lock` runs exactly one `swayidle` live: lock after 5 min (`swaylock` + current
+wallpaper), outputs off after 10 min, lock before sleep. A gamepad is read by the game straight
+from `/dev/input`, so sway counts the session as idle and locked it mid-play; two fixes are in
+`sway/config` + `scripts/`:
+
+- `for_window [class="^steam_app_"] inhibit_idle focus` (Steam/Proton, `.exe`, `gamescope`,
+  Minecraft, Lutris, Heroic, Steam client/Big Picture) — a view holding sway's native idle
+  inhibitor pauses **both** timers while it has focus; `focus` means the lock resumes as soon as
+  the game loses focus / closes (5 min later), `before-sleep` locking is untouched.
+- `scripts/sway-gamepad-idle-guard` — watches the joystick evdev devices (`input` group) and
+  holds/clears the same `inhibit_idle focus` from real pad input, which also covers games whose
+  class/app_id is not in the list. Release after 300 s without pad input
+  (`GAMEPAD_IDLE_GUARD_RELEASE_AFTER`).
+
+Check the live state with
+`~/.local/bin/sway-gamepad-idle-guard --status` (pads, parsed rules, views that actually hold an
+inhibitor right now):
+
+```sh
+swaymsg -t get_tree | jq -r '.. | objects | select((.idle_inhibitors.user? // "none") != "none")
+  | "view \(.id) [\(.idle_inhibitors.user)] \(.name)"'
+```
+
+Verified 2026-09-25 with a 3 s `swayidle` inside the live session: timer fires normally, does not
+fire while the focused game view holds the inhibitor, fires again once the inhibitor is cleared.
+
+### Fullscreen games: keep frames flowing (SwayFX + XWayland/Proton)
+
+- `scripts/sway-game-freeze-daemon` runs in the background (`exec_always` in `sway/config`), monitoring
+  fullscreen games. If controller input is active while screen pixels stay completely frozen for > 2 seconds,
+  it automatically toggles fullscreen off/on to unstick SwayFX/XWayland frame presentation immediately.
+- `scripts/sway-game-unstick` (bound to `Super+G`) remains available for manual unfreezing anytime.
+- New Steam/Proton windows automatically start with per-window SwayFX `blur disable` so fullscreen games
+  never pay for the desktop's blur render pipeline.
+
+### Lock screen (Super+L, idle timeout and before-sleep)
+
+`scripts/sway-lock` runs the classic lock screen with stock `swaylock`: current wallpaper
+full-screen, then swaylock's default prompt. No built clock/date/hint, and no
+`~/.config/swaylock/config` theme (that file is intentionally absent so swaylock uses its
+defaults). A flock + `pgrep` guard keeps two callers from ever stacking two lock screens
+(the old bug: unlock once, still locked).
+
+Usage: `sway-lock --dry-run`, `sway-lock --print-wallpaper`.
+Tune with `LOCK_WALLPAPER=/path.png` (force the lock image).
 
 ## Validate
 

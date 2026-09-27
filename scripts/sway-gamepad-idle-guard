@@ -1,0 +1,540 @@
+#!/usr/bin/env python3
+"""sway-gamepad-idle-guard - keep sway's idle lock from firing while a gamepad is in use.
+
+Problem it fixes
+----------------
+swayidle (see ~/.local/bin/sway-idle-lock) locks the session after 5 min of
+"inactivity" and powers the outputs off after 10 min.  sway/wlroots only see
+keyboard, pointer and touch input - a gamepad is read by the game (or by Steam)
+straight from /dev/input, so sway considers you idle and locks the screen in the
+middle of a controller session (reproduced 2026-09-25: the focused XWayland
+Proton window `steam_app_387290` was playing, a 3 s test timeout still fired).
+
+What it does
+------------
+* watches every kernel joystick device from /proc/bus/input/devices (the user
+  must be in the `input` group - `kara` is),
+* while buttons/sticks/triggers are really moved it holds sway's native per-view
+  idle inhibitor (`inhibit_idle focus`, the same mechanism as the
+  `for_window ... inhibit_idle focus` rules in sway/config) on the focused view,
+* after RELEASE_AFTER seconds without gamepad input it clears the inhibitor and
+  sway restarts its idle countdown, so the session locks 5 min after you really
+  stopped playing - and never while you play.
+
+Views already covered by a `for_window ... inhibit_idle` rule in
+~/.config/sway/config are left untouched, so this script never clears an
+inhibitor owned by the sway config.
+
+Run: exec_always --no-startup-id ~/.local/bin/sway-gamepad-idle-guard
+Flags: --dry-run, -v/--verbose, --status, --version, --help
+Env:   GAMEPAD_IDLE_GUARD_DEVICES, _RELEASE_AFTER, _SWAYMSG, _TREE, _CONFIG
+"""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import json
+import os
+import re
+import select
+import signal
+import struct
+import subprocess
+import sys
+import time
+
+VERSION = "1.0"
+TICK = 1.0                # main loop period (s)
+TREE_REFRESH = 5.0        # min. seconds between sway focus lookups while the pad is used
+REASSERT = 30.0           # re-apply the inhibitor every N s (survives `swaymsg reload`)
+DEVICE_SCAN = 5.0         # hot-plug rescan period (s)
+RETRY_OPEN = 60.0         # retry a device that could not be opened after N s
+DEADZONE = 0.08           # 8% of an axis range counts as "moved"
+DEFAULT_RELEASE = 300.0   # pad silence before the inhibitor is released
+EV_KEY, EV_ABS = 0x01, 0x03
+ABS_MAX = 0x3F
+EVENT = struct.Struct("llHHi")   # struct input_event (24 bytes on 64-bit)
+RUNTIME_DIR = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
+PIDFILE = os.path.join(RUNTIME_DIR, "sway-gamepad-idle-guard.pid")
+LOCKFILE = os.path.join(RUNTIME_DIR, "sway-gamepad-idle-guard.lock")
+SWAY_CONFIG = os.environ.get("GAMEPAD_IDLE_GUARD_CONFIG", os.path.expanduser("~/.config/sway/config"))
+VERBOSE = False
+LOG_PREFIX = "sway-gamepad-idle-guard"
+
+
+def log(msg):
+    print(f"{LOG_PREFIX}: {msg}", file=sys.stderr, flush=True)
+
+
+def vlog(msg):
+    if VERBOSE:
+        log(msg)
+
+
+# ---------------------------------------------------------------- input devices
+
+def discover_gamepads():
+    """{event device path: name} for every kernel joystick (js*) device."""
+    found = {}
+    try:
+        with open("/proc/bus/input/devices", encoding="utf-8", errors="replace") as fh:
+            raw = fh.read()
+    except OSError as exc:
+        vlog(f"cannot read /proc/bus/input/devices: {exc}")
+        return found
+    for block in raw.strip().split("\n\n"):
+        name = ""
+        handlers = []
+        for line in block.splitlines():
+            if line.startswith("N: Name="):
+                name = line.split("=", 1)[1].strip().strip('"')
+            elif line.startswith("H: Handlers="):
+                handlers = line.split("=", 1)[1].split()
+        if not any(re.fullmatch(r"js\d+", h) for h in handlers):
+            continue
+        for handler in handlers:
+            if re.fullmatch(r"event\d+", handler):
+                found[f"/dev/input/{handler}"] = name
+    return found
+
+
+def _ioctl_read(fd, request, size):
+    buffer = bytearray(size)
+    try:
+        fcntl.ioctl(fd, request, buffer, True)
+    except OSError:
+        return None
+    return bytes(buffer)
+
+
+def _eviocgbit(fd, ev_type, nbytes=8):
+    """Bitmask of the supported event codes of ev_type (EVIOCGBIT)."""
+    return _ioctl_read(fd, 0x80000000 | (nbytes << 16) | (ord("E") << 8) | (0x20 + ev_type), nbytes)
+
+
+def _eviocgabs(fd, axis):
+    """struct input_absinfo of one axis: (value, min, max, fuzz, flat, resolution)."""
+    data = _ioctl_read(fd, 0x80000000 | (24 << 16) | (ord("E") << 8) | (0x40 + axis), 24)
+    return struct.unpack("iiiiii", data) if data else None
+
+
+class Pad:
+    """One gamepad event device plus the rest value/threshold of each axis."""
+
+    def __init__(self, path, name):
+        self.path = path
+        self.name = name
+        self.fd = -1
+        self.axes = {}        # axis code -> (rest value, movement threshold)
+        self.dead = False
+        self.buffer = b""
+
+    def open(self):
+        try:
+            self.fd = os.open(self.path, os.O_RDONLY | os.O_NONBLOCK)
+        except OSError as exc:
+            log(f"cannot read {self.path}: {exc} (is the user in the 'input' group?)")
+            return False
+        bits = _eviocgbit(self.fd, EV_ABS)
+        for axis in range(ABS_MAX + 1):
+            if not bits or not (bits[axis // 8] & (1 << (axis % 8))):
+                continue
+            info = _eviocgabs(self.fd, axis)
+            if not info:
+                continue
+            value, minimum, maximum, fuzz, flat, _resolution = info
+            # `value` read at startup is the resting position (sticks centre, triggers at
+            # their minimum), so drift/jitter below 8% of the range is not "activity".
+            threshold = max(int(abs(maximum - minimum) * DEADZONE), fuzz, flat, 1)
+            self.axes[axis] = (value, threshold)
+        vlog(f"watching {self.path} ({self.name}), {len(self.axes)} axes")
+        return True
+
+    def close(self):
+        if self.fd >= 0:
+            try:
+                os.close(self.fd)
+            except OSError:
+                pass
+        self.fd = -1
+
+    def poll(self):
+        """Drain the device. Returns True if the events count as real user input."""
+        activity = False
+        while True:
+            try:
+                chunk = os.read(self.fd, EVENT.size * 64)
+            except BlockingIOError:
+                break
+            except OSError:
+                self.dead = True
+                break
+            if not chunk:
+                self.dead = True          # FIFO/test device closed; never happens on evdev
+                break
+            self.buffer += chunk
+            while len(self.buffer) >= EVENT.size:
+                _sec, _usec, etype, code, value = EVENT.unpack_from(self.buffer, 0)
+                self.buffer = self.buffer[EVENT.size:]
+                if etype == EV_KEY:                    # button / trigger digital switch
+                    activity = True
+                elif etype == EV_ABS:                  # stick / analogue trigger / d-pad
+                    rest = self.axes.get(code)
+                    if rest is None or abs(value - rest[0]) > rest[1]:
+                        activity = True
+        return activity
+
+    def describe(self):
+        return f"{self.path} ({self.name})"
+
+
+# ---------------------------------------------------------------- sway IPC
+
+class Sway:
+    def __init__(self, dry_run=False):
+        self.binary = os.environ.get("GAMEPAD_IDLE_GUARD_SWAYMSG", "swaymsg")
+        self.tree_file = os.environ.get("GAMEPAD_IDLE_GUARD_TREE")
+        self.dry_run = dry_run
+
+    def _run(self, args):
+        if self.dry_run:
+            log(f"[dry-run] {self.binary} {' '.join(args)}")
+            return None
+        try:
+            proc = subprocess.run([self.binary, *args], capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.SubprocessError) as exc:
+            vlog(f"swaymsg {args} failed: {exc}")
+            return None
+        if proc.returncode != 0:
+            vlog(f"swaymsg {args} -> rc={proc.returncode} {proc.stderr.strip()}")
+            return None
+        return proc.stdout
+
+    def tree(self):
+        """sway's container tree (or the dump in GAMEPAD_IDLE_GUARD_TREE for tests)."""
+        if self.tree_file:
+            try:
+                with open(self.tree_file, encoding="utf-8") as fh:
+                    return json.load(fh)
+            except (OSError, ValueError) as exc:
+                vlog(f"cannot use {self.tree_file}: {exc}")
+                return None
+        output = self._run(["-t", "get_tree"])
+        if output is None:
+            return None
+        try:
+            return json.loads(output)
+        except ValueError as exc:
+            vlog(f"bad get_tree output: {exc}")
+            return None
+
+    def focused_view(self):
+        tree = self.tree()
+        return self._find_focused(tree) if tree else None
+
+    def inhibited_views(self):
+        """[(con_id, label, mode, active)] for views with a *user* idle inhibitor (`inhibit_idle`).
+
+        `mode` is what the sway config / this script set, `active` is sway's own
+        `inhibit_idle` flag (a `focus` inhibitor only blocks while the view has focus).
+        """
+        found = []
+        tree = self.tree()
+        if tree:
+            self._collect_inhibited(tree, found)
+        return found
+
+    @classmethod
+    def _collect_inhibited(cls, node, out):
+        for key in ("nodes", "floating_nodes"):
+            for child in node.get(key) or []:
+                inhibitors = child.get("idle_inhibitors") or {}
+                if (child.get("type") in ("con", "floating_con")
+                        and inhibitors.get("user", "none") != "none"):
+                    out.append((child.get("id"), view_label(child),
+                                inhibitors.get("user"), bool(child.get("inhibit_idle"))))
+                cls._collect_inhibited(child, out)
+
+    @classmethod
+    def _find_focused(cls, node):
+        for key in ("nodes", "floating_nodes"):
+            for child in node.get(key) or []:
+                if child.get("focused") and child.get("type") in ("con", "floating_con"):
+                    return child
+                found = cls._find_focused(child)
+                if found:
+                    return found
+        return None
+
+    def inhibit(self, con_id, mode):
+        """mode: focus|fullscreen|open|visible|none - applied to one container."""
+        self._run([f"[con_id={con_id}] inhibit_idle {mode}"])
+
+
+def view_label(view):
+    props = view.get("window_properties") or {}
+    return f"{view.get('app_id') or props.get('class') or '?'} | {(view.get('name') or '')[:40]}"
+
+
+def load_static_patterns(path):
+    """(attr, regex) for every `for_window [...] inhibit_idle` rule in the sway config."""
+    patterns = []
+    try:
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        vlog(f"no sway config at {path} - static-rule check disabled")
+        return patterns
+    rule = re.compile(r'for_window\s+\[(class|app_id)\s*=\s*"([^"]+)"[^\]]*\]\s+inhibit_idle\b')
+    for line in text.splitlines():
+        match = rule.search(line.split("#", 1)[0])
+        if match:
+            patterns.append((match.group(1), match.group(2)))
+    return patterns
+
+
+def covered_by_config(patterns, view):
+    """The regex of the sway config rule that already inhibits this view, or None."""
+    props = view.get("window_properties") or {}
+    for attr, regex in patterns:
+        value = view.get("app_id") if attr == "app_id" else props.get("class")
+        if not value:
+            continue
+        try:
+            if re.search(regex, value):
+                return regex
+        except re.error:
+            continue
+    return None
+
+
+# ---------------------------------------------------------------- daemon
+
+class Guard:
+    def __init__(self, dry_run=False):
+        self.sway = Sway(dry_run=dry_run)
+        self.patterns = load_static_patterns(SWAY_CONFIG)
+        self.release_after = float(os.environ.get("GAMEPAD_IDLE_GUARD_RELEASE_AFTER", DEFAULT_RELEASE))
+        self.pads = {}
+        self.retry_at = {}
+        self.held = {}             # con_id -> label of the view that holds our inhibitor
+        self.last_activity = None
+        self.last_tree = 0.0
+        self.last_reassert = 0.0
+        self.last_scan = 0.0
+        self.running = True
+
+    # -- devices ---------------------------------------------------------
+    def scan_devices(self, force=False):
+        wanted = os.environ.get("GAMEPAD_IDLE_GUARD_DEVICES")
+        devices = ({p: "test device" for p in re.split(r"[,\s]+", wanted) if p}
+                   if wanted else discover_gamepads())
+        now = time.monotonic()
+        for path, name in devices.items():
+            pad = self.pads.get(path)
+            if pad and not pad.dead:
+                continue
+            if pad:                                  # unplugged/replugged -> reopen
+                pad.close()
+                del self.pads[path]
+            if not force and now < self.retry_at.get(path, 0.0):
+                continue
+            candidate = Pad(path, name)
+            if candidate.open():
+                self.pads[path] = candidate
+                self.retry_at.pop(path, None)
+                if not wanted:
+                    log(f"watching gamepad {candidate.describe()}")
+            else:
+                self.retry_at[path] = now + RETRY_OPEN
+        for path, pad in list(self.pads.items()):
+            if path not in devices:
+                log(f"gamepad gone: {pad.describe()}")
+                pad.close()
+                del self.pads[path]
+        self.retry_at = {p: t for p, t in self.retry_at.items() if p in devices}
+
+    # -- inhibitors ------------------------------------------------------
+    def hold_inhibitor(self):
+        view = self.sway.focused_view()
+        if not view:
+            vlog("no focused view - nothing to inhibit")
+            return
+        con_id = view.get("id")
+        if con_id in self.held:
+            return
+        # Trust what sway *actually* reports, not what the config text claims.
+        # `for_window [...] inhibit_idle` is only applied to views it catches as
+        # they are created; a view that already existed (or an XWayland view
+        # matched after the rule was loaded) can match the rule yet still carry
+        # no inhibitor - which is exactly the 2026-09-26 case, the running
+        # `steam_app_387290` window matched '^steam_app_' and still had
+        # idle_inhibitors.user == 'none', so the session locked mid-game.
+        already = (view.get("idle_inhibitors") or {}).get("user", "none")
+        if already != "none":
+            vlog(f"view {con_id} already holds sway's own inhibitor {already!r} "
+                 f"- leaving it to the config")
+            return
+        pattern = covered_by_config(self.patterns, view)
+        if pattern:
+            log(f"view {con_id} matches sway config rule {pattern!r} but sway holds "
+                 f"no inhibitor for it - taking over (gamepad in use)")
+        self.sway.inhibit(con_id, "focus")
+        self.held[con_id] = view_label(view)
+        self.last_reassert = time.monotonic()      # don't re-assert right away
+        log(f"gamepad in use -> idle inhibitor on view {con_id} ({self.held[con_id]})")
+
+    def release_inhibitors(self, reason):
+        for con_id, label in list(self.held.items()):
+            self.sway.inhibit(con_id, "none")
+            del self.held[con_id]
+            log(f"released idle inhibitor on view {con_id} ({label}) - {reason}")
+
+    # -- main loop -------------------------------------------------------
+    def run(self):
+        self.scan_devices(force=True)
+        if not self.pads:
+            log("no gamepad found (connected? is the user in the 'input' group?)")
+        while self.running:
+            fds = [pad.fd for pad in self.pads.values() if pad.fd >= 0 and not pad.dead]
+            try:
+                readable, _, _ = select.select(fds, [], [], TICK)
+            except (OSError, ValueError):
+                readable = []
+            now = time.monotonic()
+            if not self.running:              # SIGTERM: release right away, don't run another tick
+                break
+            if readable:
+                active = False
+                for pad in self.pads.values():
+                    if pad.fd in readable and pad.poll():
+                        active = True
+                if active:
+                    self.last_activity = now
+                    if now - self.last_tree >= TREE_REFRESH:
+                        self.last_tree = now
+                        self.hold_inhibitor()
+            if now - self.last_scan >= DEVICE_SCAN:
+                self.last_scan = now
+                self.scan_devices()
+            if self.held:
+                if self.last_activity is not None and now - self.last_activity >= self.release_after:
+                    self.release_inhibitors(f"{self.release_after:.0f}s without gamepad input")
+                    self.last_activity = None
+                elif now - self.last_reassert >= REASSERT:
+                    self.last_reassert = now         # self-heal after `swaymsg reload`
+                    for con_id in list(self.held):
+                        self.sway.inhibit(con_id, "focus")
+        self.release_inhibitors("shutting down")
+
+    def stop(self, *_args):
+        self.running = False
+
+    def status(self):
+        print(f"{LOG_PREFIX} v{VERSION}")
+        pads = ", ".join(p.describe() for p in self.pads.values()) or "(no js* device found in /proc/bus/input/devices)"
+        print(f"  pad devices    : {pads}")
+        try:
+            with open(PIDFILE, encoding="utf-8") as fh:
+                daemon_pid = int(fh.read().strip())
+        except (OSError, ValueError):
+            daemon_pid = None
+        print(f"  daemon        : {'pid %d' % daemon_pid if daemon_pid else 'not running'}")
+        live = self.sway.inhibited_views()
+        if live:
+            print("  live inhibitors (inhibit_idle, from sway):")
+            for con_id, label, mode, active in live:
+                state = "blocking now" if active else "not focused, idle still allowed"
+                print(f"    view {con_id} [{mode}] {state} - {label}")
+        else:
+            print("  live inhibitors (inhibit_idle, from sway): none")
+        print(f"  release after  : {self.release_after:.0f}s without gamepad input")
+        print(f"  sway config    : {SWAY_CONFIG} ({len(self.patterns)} for_window inhibit_idle rules)")
+        for attr, regex in self.patterns:
+            print(f"    {attr} =~ {regex}")
+
+
+# ---------------------------------------------------------------- entry point
+
+def _terminate_previous():
+    """SIGTERM the instance from the pidfile (only if it really is this script)."""
+    try:
+        with open(PIDFILE, encoding="utf-8") as fh:
+            pid = int(fh.read().strip())
+    except (OSError, ValueError):
+        return
+    if pid <= 0 or pid == os.getpid():
+        return
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as fh:
+            cmdline = fh.read().decode("utf-8", "replace")
+    except OSError:
+        return
+    if LOG_PREFIX in cmdline:
+        vlog(f"replacing previous instance (pid {pid})")
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+
+
+def acquire_single_instance():
+    """flock + pidfile in XDG_RUNTIME_DIR; takes over from a previous instance."""
+    lock_fd = os.open(LOCKFILE, os.O_WRONLY | os.O_CREAT, 0o600)
+    deadline = time.monotonic() + 5.0
+    while True:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except OSError:
+            _terminate_previous()
+            if time.monotonic() >= deadline:
+                os.close(lock_fd)
+                return None
+            time.sleep(0.25)
+    with open(PIDFILE, "w", encoding="utf-8") as fh:
+        fh.write(f"{os.getpid()}\n")
+    return lock_fd
+
+
+def main():
+    global VERBOSE
+    parser = argparse.ArgumentParser(
+        description="Hold a sway idle inhibitor while a gamepad is really being used")
+    parser.add_argument("--status", action="store_true",
+                        help="print pads, sway rules and held inhibitors, then exit")
+    parser.add_argument("--dry-run", action="store_true", help="log instead of calling swaymsg")
+    parser.add_argument("-v", "--verbose", action="store_true", help="also log focus lookups")
+    parser.add_argument("--version", action="version", version=VERSION)
+    args = parser.parse_args()
+    VERBOSE = args.verbose
+
+    guard = Guard(dry_run=args.dry_run)
+    if args.status:
+        guard.scan_devices(force=True)
+        guard.status()
+        return 0
+
+    lock_fd = acquire_single_instance()
+    if lock_fd is None:
+        log("another instance is already running - exiting")
+        return 0
+    signal.signal(signal.SIGTERM, guard.stop)
+    signal.signal(signal.SIGINT, guard.stop)
+    signal.signal(signal.SIGHUP, guard.stop)
+    try:
+        guard.run()
+    finally:
+        try:
+            with open(PIDFILE, encoding="utf-8") as fh:
+                if int(fh.read().strip() or 0) == os.getpid():
+                    os.remove(PIDFILE)
+        except (OSError, ValueError):
+            pass
+        os.close(lock_fd)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -68,6 +68,54 @@ client.urgent      #ff0000     #ff0000     #ffffff      #ff0000      #ff0000
 # Tune the timeouts inside ~/.local/bin/sway-idle-lock.
 exec_always ~/.local/bin/sway-idle-lock
 
+### Idle lock vs. gamepads
+# Games read the controller straight from /dev/input, so sway sees no
+# keyboard/pointer activity while you play: swayidle used to lock the session
+# after 5 min and blank the screen after 10 min mid-game (reproduced
+# 2026-09-25 — a 3 s test timeout fired while the focused XWayland Proton
+# window `steam_app_387290` was playing). A view that holds sway's native idle
+# inhibitor pauses *both* timers while it has focus; the session locks again
+# 5 min after the game loses focus / is closed, `before-sleep` is untouched.
+# Swap `focus` for `fullscreen`/`visible`/`open`/`none` per rule (man 5 sway).
+for_window [class="^steam_app_"]    inhibit_idle focus   # Steam + Proton games (XWayland)
+for_window [app_id="^steam_app_"]   inhibit_idle focus   # Steam games (native Wayland)
+for_window [class="^steam$"]        inhibit_idle focus   # Steam client / Big Picture
+for_window [class="[.]exe$"]        inhibit_idle focus   # Wine/Proton exe windows
+for_window [class="^gamescope"]     inhibit_idle focus
+for_window [app_id="^gamescope"]    inhibit_idle focus
+for_window [class="^[Mm]inecraft"]  inhibit_idle focus   # Minecraft (XWayland)
+for_window [app_id="^[Mm]inecraft"] inhibit_idle focus
+for_window [class="^[Ll]utris"]     inhibit_idle focus
+for_window [class="^[Hh]eroic"]     inhibit_idle focus
+
+# Same guard driven by real gamepad input — covers games whose class/app_id is
+# not listed above (reads the pads itself, holds/clears `inhibit_idle focus`
+# around play, releases after 300 s of pad silence; see --status / --dry-run).
+exec_always --no-startup-id ~/.local/bin/sway-gamepad-idle-guard
+
+# Auto-unstick daemon: monitors fullscreen games in the background and unfreezes
+# stalled render pipelines automatically if the display freezes while playing!
+exec_always --no-startup-id ~/.local/bin/sway-game-freeze-daemon
+
+### Fullscreen games: keep frames flowing (SwayFX + XWayland/Proton)
+# Symptom 2026-09-25: a fullscreen game view can stop updating (frozen picture,
+# PC otherwise alive; leaving/entering fullscreen — or switching the display
+# away and back — restarts the frames). SwayFX blur/animate work plus exclusive
+# fullscreen scanout all touch that path, so game views get the cheapest
+# possible fullscreen here: per-window blur off on Steam/Proton views. This
+# follows the existing SwayFX comment below (blur on globally, but fullscreen
+# must not pay for it); the rest of the desktop keeps its blur.
+for_window [class="^steam_app_"]    blur disable   # Steam + Proton games (XWayland)
+for_window [app_id="^steam_app_"]   blur disable   # Steam games (native Wayland)
+for_window [class="^steam$"]        blur disable   # Steam client / Big Picture
+for_window [class="[.]exe$"]        blur disable   # Wine/Proton exe windows
+for_window [class="^gamescope"]     blur disable
+for_window [app_id="^gamescope"]    blur disable
+for_window [class="^[Mm]inecraft"]  blur disable   # Minecraft (XWayland)
+for_window [app_id="^[Mm]inecraft"] blur disable
+for_window [class="^[Ll]utris"]     blur disable
+for_window [class="^[Hh]eroic"]     blur disable
+
 ### Input configuration
 #
 # Example configuration:
@@ -90,6 +138,12 @@ input type:keyboard {
 #startup application
 
 exec_always bash -c 'pkill awww-daemon; sleep 0.2; awww-daemon'
+# awww owns the wallpaper. A stray argument-less `swaybg` (which paints the whole
+# output solid RED) is started again by something in the session on every
+# `swaymsg reload` (seen repeatedly 2026-09-25, origin not found in this config
+# or in any script); drop it after the reload settles so the wallpaper stays
+# visible. Ordered after the awww line, delayed so it also catches late spawns.
+exec_always --no-startup-id bash -c 'sleep 2; pkill -x swaybg 2>/dev/null; true'
 # Discord: start at session login. The pgrep guard means a config reload
 # (Alt+Shift+C) no longer launches a second instance / re-opens the window.
 exec_always --no-startup-id bash -c 'pgrep -ix discord >/dev/null || discord &'
@@ -133,6 +187,13 @@ bindgesture swipe:3:right exec ~/.local/bin/workspace-swipe prev
 
     # Switch keyboard layout (US/AR/FR)
     bindsym $mod2+space exec swaymsg input type:keyboard xkb_switch_layout next
+
+    # Lock the screen now (Super+L) — same classic wallpaper lock as the idle timeout
+    # (implemented in ~/.local/bin/sway-lock)
+    bindsym $mod2+l exec ~/.local/bin/sway-lock
+    # Unstick a frozen fullscreen game (Super+G): leave + re-enter fullscreen on
+    # the focused window, exactly the manual fix, without touching the game.
+    bindsym $mod2+g exec ~/.local/bin/sway-game-unstick
 
     # Exit sway (logs you out of your Wayland session)
     bindsym $mod+Shift+e exec swaynag -t warning -m 'You pressed the exit shortcut. Do you really want to exit sway? This will end your Wayland session.' -B 'Yes, exit sway' 'swaymsg exit'
@@ -266,9 +327,12 @@ bindsym $mod+r mode "resize"
     bindsym --locked XF86AudioNext exec playerctl next
     bindsym --locked XF86AudioStop exec playerctl stop
 
-    # Special keys to adjust brightness via brightnessctl
-    bindsym --locked XF86MonBrightnessDown exec brightnessctl set 5%-
-    bindsym --locked XF86MonBrightnessUp exec brightnessctl set 5%+
+    # Special keys to adjust brightness in 2% steps via ~/.local/bin/sway-brightness,
+    # which clamps the backlight to [1%, 100%] of the panel maximum: it never drops
+    # to 0% (a fully off backlight looks like a dead screen). The same helper is used
+    # by the waybar backlight module's scroll actions.
+    bindsym --locked XF86MonBrightnessDown exec ~/.local/bin/sway-brightness down
+    bindsym --locked XF86MonBrightnessUp exec ~/.local/bin/sway-brightness up
 
     # $mod+p — duplicate (mirror) the laptop screen on the connected external.
     # The script keeps the first wl-mirror backend that survives 1s:
