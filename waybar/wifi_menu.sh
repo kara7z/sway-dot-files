@@ -1,7 +1,7 @@
 #!/bin/sh
 # Portable — uses $HOME (no hardcoded user path)
-# Anchored dropdown (no rofi/wofi): waybar-dropdown drops at the bottom-right
-# corner of the screen (no taskbar covering it).
+# Anchored dropdown (no rofi/wofi): waybar-dropdown drops above the bar,
+# centered under the clicked Wi-Fi module.
 #
 # One menu at a time: the Wi-Fi and the power menu share a single lock. Clicking
 # the same button again closes the menu (toggle); clicking the other button closes
@@ -38,13 +38,13 @@ run_dropdown() {                              # arguments pass straight through
 
 # Small action menu helper: ask <prompt> <lines>  (items on stdin)
 ask() {
-    run_dropdown --anchor-cursor --anchor-align right --anchor-edge bottom \
+    run_dropdown --anchor-cursor --anchor-edge bottom \
         --width 300 --prompt "$1" --max-lines "$2" --stay-open --refocus
 }
 
 # Masked password prompt (dropdown entry)
 ask_password() {
-    run_dropdown --anchor-cursor --anchor-align right --anchor-edge bottom \
+    run_dropdown --anchor-cursor --anchor-edge bottom \
         --password --prompt "Password for $1" --stay-open --refocus
 }
 
@@ -146,7 +146,7 @@ lines=$count
 
 # --refresh-cmd re-runs this script in --list mode: the Refresh row re-scans
 # and repopulates the panel in place, no close/reopen flash.
-chosen=$(printf '%s\n' "$list" | run_dropdown --anchor-cursor --anchor-align right \
+chosen=$(printf '%s\n' "$list" | run_dropdown --anchor-cursor \
     --width "$width" --prompt "WiFi" --max-lines "$lines" \
     --anchor-edge bottom --refresh-cmd "$0 --list yes" --cancel \
     --stay-open --refocus)
