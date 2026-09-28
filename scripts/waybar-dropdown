@@ -8,13 +8,17 @@ line is printed on stdout:
 
     printf 'Lock\\nSuspend\\nLogout\\n' | waybar-dropdown --prompt Power
 
-Keys: Up/Down move, Enter chooses, Esc cancels; a click outside cancels too.
-Exit status: 0 = line chosen, 1 = cancelled, 2 = usage/unavailable.
+Keys: Up/Down move, Enter chooses, Esc cancels. Rows are clickable.
+Exit status: 0 = line chosen, 1 = cancelled (Esc or the Cancel row),
+2 = usage/unavailable.
 
 Usage: waybar-dropdown [--prompt TEXT] [--width N] [--margin-top N]
                        [--margin-bottom N] [--margin-right N] [--max-lines N]
                        [--password] [--anchor-cursor | --anchor-x N]
-                       [--anchor-edge auto|top|bottom] [--dry-run]
+                       [--anchor-edge auto|top|bottom] [--anchor-align A]
+                       [--stay-open] [--cancel] [--cancel-label TEXT]
+                       [--refresh-cmd CMD] [--refresh-label TEXT]
+                       [--refocus] [--dry-run]
 
 Options:
   --anchor-cursor  drop down next to the pointer, i.e. next to the waybar
@@ -26,20 +30,54 @@ Options:
                    so the panel opens *above* it; with no pointer position the
                    waybar config's "position" decides
   --anchor-x N     explicit anchor x (testing / custom layouts)
+  --anchor-align A    center (default) centres the panel on the click; right
+                      pins it to the screen's right edge (bottom-right corner)
   --margin-top N      distance from the top screen edge (default 36)
   --margin-bottom N   gap above a bottom bar (default 5; the bar's exclusive
                       zone already moves the bottom edge up past the bar)
+  --max-lines N       list rows shown before scrolling (default 10). The
+                      Cancel/Refresh rows are extras and always fit.
   --password   masked single-line entry instead of a list (prints the text)
+  --stay-open  do NOT close when the panel loses keyboard focus or goes idle:
+               it then closes only on Esc, on the Cancel row, or when an item
+               is picked (this is what makes "second click does nothing" safe:
+               nothing else can dismiss the menu behind the user's back)
+  --refocus    with --stay-open: grab the keyboard back after a focus loss so
+               Esc keeps working even when another window was clicked
+               (verified on sway: NONE -> EXCLUSIVE hands the keyboard back)
+  --cancel     append a Cancel row that closes the menu without a choice
+  --cancel-label TEXT  label of that row (default "✕ Cancel")
+  --refresh-cmd CMD    shell command that re-prints the item list; adds a
+                       Refresh row which runs it asynchronously and
+                       repopulates the panel in place (no close/reopen flash)
+Environment:
+  WAYBAR_DROPDOWN_DEBUG=1  log focus events, received keys, row clicks and
+                           refresh runs on stderr (debugging the stay-open /
+                           refocus behaviour, which is invisible otherwise)
+  --refresh-label TEXT label of that row (default "⟳ Refresh")
   --dry-run    parse args/items and print the resolved config as JSON, no GUI
 """
 import argparse
 import json
 import os
 import re
+import subprocess
 import sys
+import threading
 import time
 
-ROW_HEIGHT = 34          # px; keep in sync with the CSS below
+DEBUG = os.environ.get("WAYBAR_DROPDOWN_DEBUG") == "1"
+
+
+def dbg(msg):
+    """WAYBAR_DROPDOWN_DEBUG=1 -> focus/keyboard trace on stderr. Focus handling
+    is the one part of this panel that is invisible from the outside (no crash,
+    no output), so the trace is what makes it debuggable."""
+    if DEBUG:
+        print(f"[waybar-dropdown {os.getpid()}] {msg}", file=sys.stderr, flush=True)
+
+
+ROW_HEIGHT = 38          # px per row (16 px font + 8 px padding, measured)
 MIN_WIDTH = 240
 MAX_WIDTH = 560
 DEFAULT_MARGIN_TOP = 36     # below a top bar: 31 px bar + 5 px gap
@@ -47,33 +85,44 @@ DEFAULT_MARGIN_BOTTOM = 5   # gap above the bar: waybar's exclusive zone already
                             # lifts the bottom edge by the bar height (31 px)
 DEFAULT_MARGIN_RIGHT = 8
 
+# Row kinds (the Cancel/Refresh rows are synthetic and never printed on stdout)
+ROW_ITEM, ROW_REFRESH, ROW_CANCEL = 0, 1, 2
+REFRESHING_LABEL = "\u27f3 Refreshing\u2026"
+
 CSS = b"""
-window { background-color: transparent; }
+/* Fully opaque: nothing behind the panel shows through, and the panel matches the
+   bar, which is solid black (see ~/.config/waybar/style.css). The tints below are
+   the old alpha values pre-blended against black, so the design is unchanged:
+   hover 10% -> #1a1a1a, selected 15% -> #262626, divider 25% -> #404040,
+   action text 88% -> #e0e0e0, header 75% -> #bfbfbf, busy 50% -> #808080. */
+window { background-color: black; }
 #dropdown {
-    background-color: rgba(0, 0, 0, 0.6);
+    background-color: black;
     border: 1px solid white;
     color: white;
     font-family: "FiraCode Nerd Font", monospace;
     font-size: 16px;
 }
 #header {
-    color: rgba(255, 255, 255, 0.75);
+    color: #bfbfbf;
     font-size: 13px;
-    padding: 10px 16px 2px 16px;
 }
 .row {
-    padding: 8px 16px;
-    min-height: 18px;
     color: white;
 }
-.row:hover { background-color: rgba(255, 255, 255, 0.10); }
+.row:hover { background-color: #1a1a1a; }
 .row.selected {
-    background-color: rgba(255, 255, 255, 0.15);
+    background-color: #262626;
     box-shadow: inset 0 -2px #ffffff;
 }
-#password { padding: 10px 16px; }
+/* Cancel / Refresh: visually separated from the real list above them */
+.row.action {
+    border-top: 1px solid #404040;
+    color: #e0e0e0;
+}
+.row.busy { color: #808080; }
 #password entry {
-    background-color: rgba(255, 255, 255, 0.1);
+    background-color: #1a1a1a;
     color: white;
     border: 1px solid white;
     border-radius: 0;
@@ -95,10 +144,44 @@ def parse_args(argv):
     p.add_argument("--password", action="store_true")
     p.add_argument("--margin-bottom", type=int, default=None)
     p.add_argument("--anchor-edge", choices=("auto", "top", "bottom"), default="auto")
+    p.add_argument("--anchor-align", choices=("center", "right"), default="center")
     p.add_argument("--anchor-cursor", action="store_true")
     p.add_argument("--anchor-x", type=int, default=None)
+    p.add_argument("--stay-open", action="store_true")
+    p.add_argument("--refocus", action="store_true")
+    p.add_argument("--cancel", action="store_true")
+    p.add_argument("--cancel-label", default="\u2715 Cancel")
+    p.add_argument("--refresh-cmd", default="")
+    p.add_argument("--refresh-label", default="\u27f3 Refresh")
     p.add_argument("--dry-run", action="store_true")
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+    check_args(args)
+    return args
+
+
+def die(msg):
+    print(f"waybar-dropdown: {msg}", file=sys.stderr)
+    raise SystemExit(2)
+
+
+def check_args(args):
+    """Reject nonsense ranges here: a bogus --max-lines otherwise shows up as
+    an empty 0-height panel (exit 0, looks fine in a log), and a huge margin
+    pushes the panel off-screen where no click can ever reach it."""
+    if not 1 <= args.max_lines <= 40:
+        die("--max-lines must be 1..40")
+    if args.width and not MIN_WIDTH <= args.width <= MAX_WIDTH:
+        die(f"--width must be {MIN_WIDTH}..{MAX_WIDTH} (0 = auto)")
+    for name, val in (("--margin-top", args.margin_top),
+                      ("--margin-bottom", args.margin_bottom),
+                      ("--margin-right", args.margin_right)):
+        if val is not None and not 0 <= val <= 400:
+            die(f"{name} must be 0..400")
+    if args.password and (args.cancel or args.refresh_cmd):
+        die("--cancel/--refresh-cmd apply to list mode, not --password")
+    if args.refocus and not args.stay_open:
+        die("--refocus needs --stay-open: re-grabbing the keyboard of a menu "
+            "that closes on focus loss would only close it sooner")
 
 
 def load_items():
@@ -146,8 +229,9 @@ class Dropdown:
         import gi
         gi.require_version("Gtk", "3.0")
         gi.require_version("GtkLayerShell", "0.1")
-        from gi.repository import Gtk, Gdk, GtkLayerShell
+        from gi.repository import Gtk, Gdk, GLib, GtkLayerShell, Pango
         self.Gtk, self.Gdk, self.LS = Gtk, Gdk, GtkLayerShell
+        self.GLib, self.Pango = GLib, Pango
 
         self.args = args
         self.items = items
@@ -156,8 +240,14 @@ class Dropdown:
         self.had_focus = False
         self.map_time = 0.0
         self.result = None
+        self.rows = []                  # (EventBox, kind, label) in display order
+        self.refreshing = False         # a refresh scan is running right now
+        self.regrab_staged = False      # mid NONE -> EXCLUSIVE keyboard dance
+        self.regrab_at = 0.0            # last time we reclaimed the keyboard
+        self.width = args.width or auto_width(items, args.prompt)
+        self.anchor_y = None
 
-        width = args.width or auto_width(items, args.prompt)
+        width = self.width
         self.win = Gtk.Window()
         self.win.set_decorated(False)
         self.win.set_resizable(False)
@@ -189,13 +279,16 @@ class Dropdown:
         else:
             LS.set_anchor(self.win, LS.Edge.TOP, True)
             LS.set_margin(self.win, LS.Edge.TOP, args.margin_top)
-        if self.anchor_x is not None:
+        if self.anchor_x is not None and args.anchor_align == "center":
             LS.set_anchor(self.win, LS.Edge.LEFT, True)
+            self.anchor_y = cursor[1] if cursor else None
             LS.set_margin(self.win, LS.Edge.LEFT,
-                          self.anchor_margin(self.anchor_x, width, cursor[1] if cursor else None))
+                          self.anchor_margin(self.anchor_x, width, self.anchor_y))
         else:
             LS.set_anchor(self.win, LS.Edge.RIGHT, True)
             LS.set_margin(self.win, LS.Edge.RIGHT, args.margin_right)
+        # EXCLUSIVE: keystrokes reach the panel even when another window looks
+        # focused, which is what keeps "Esc closes it" true for a stay-open menu.
         LS.set_keyboard_mode(self.win, LS.KeyboardMode.EXCLUSIVE)
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -205,6 +298,10 @@ class Dropdown:
         if args.prompt:
             header = Gtk.Label(label=args.prompt, xalign=0)
             header.set_name("header")
+            header.set_margin_start(16)
+            header.set_margin_end(16)
+            header.set_margin_top(8)
+            header.set_margin_bottom(4)
             box.add(header)
 
         if args.password:
@@ -213,26 +310,24 @@ class Dropdown:
             entry.connect("activate", self.on_password_enter)
             holder = Gtk.Box()
             holder.set_name("password")
+            holder.set_margin_start(16)
+            holder.set_margin_end(16)
+            holder.set_margin_top(8)
+            holder.set_margin_bottom(10)
             holder.add(entry)
             box.add(holder)
             self.entry = entry
         else:
-            scroller = Gtk.ScrolledWindow()
-            scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-            scroller.props.max_content_height = max(1, min(args.max_lines, len(items))) * ROW_HEIGHT
-            holder = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-            scroller.add(holder)
-            box.add(scroller)
-            self.rows = []
-            for idx, text in enumerate(items):
-                row = Gtk.EventBox()
-                row.get_style_context().add_class("row")
-                row.add(Gtk.Label(label=text, xalign=0))
-                row.connect("button-press-event", self.on_row_click, idx)
-                row.connect("enter-notify-event", self.on_row_hover, idx)
-                holder.add(row)
-                self.rows.append(row)
-            self.apply_selection()
+            self.scroller = Gtk.ScrolledWindow()
+            self.scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+            # Grow with the number of items (bounded by --max-lines, then scroll).
+            # Without propagate-natural-height the scrolled window requests a tiny
+            # default height and the panel showed only ~2 rows.
+            self.scroller.set_propagate_natural_height(True)
+            self.holder = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            self.scroller.add(self.holder)
+            box.add(self.scroller)
+            self.build_rows()
 
         self.win.connect("key-press-event", self.on_key)
         self.win.connect("focus-in-event", self.on_focus_in)
@@ -243,6 +338,86 @@ class Dropdown:
         Gtk.StyleContext.add_provider_for_screen(
             Gdk.Screen.get_default(), provider,
             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+    # ------------------------------------------------------------------ rows
+
+    def row_specs(self):
+        """Display rows: the real items, then the synthetic Cancel/Refresh
+        rows (added last so they stay put while the list above is repopulated)."""
+        specs = [(ROW_ITEM, text) for text in self.items]
+        if self.args.refresh_cmd:
+            specs.append((ROW_REFRESH, self.args.refresh_label))
+        if self.args.cancel:
+            specs.append((ROW_CANCEL, self.args.cancel_label))
+        return specs
+
+    def build_rows(self):
+        """(Re)create the row widgets — used at startup and after a refresh."""
+        for row, _kind, _label in self.rows:
+            row.destroy()
+        self.rows = []
+        for idx, (kind, text) in enumerate(self.row_specs()):
+            row = self.Gtk.EventBox()
+            ctx = row.get_style_context()
+            ctx.add_class("row")
+            if kind != ROW_ITEM:
+                ctx.add_class("action")
+            # CSS padding is not honoured on GtkEventBox, so size the row and
+            # indent the label from code (otherwise rows collapse to ~20 px).
+            row.set_size_request(-1, ROW_HEIGHT)
+            label = self.Gtk.Label(label=text, xalign=0)
+            label.set_margin_start(16)
+            label.set_margin_end(8)
+            label.set_ellipsize(self.Pango.EllipsizeMode.END)
+            row.add(label)
+            row.connect("button-press-event", self.on_row_click, idx)
+            row.connect("enter-notify-event", self.on_row_hover, idx)
+            self.holder.add(row)
+            self.rows.append((row, kind, text))
+        self.holder.show_all()           # rows added by a refresh need showing
+        self.selected = min(self.selected, max(0, len(self.rows) - 1))
+        dbg(f"build_rows: {len(self.rows)} rows, selected={self.selected}")
+        self.apply_selection()
+        self.update_size()
+
+    def update_size(self):
+        """Panel height: --max-lines applies to the item rows only, so the
+        Cancel/Refresh rows are never scrolled out of sight."""
+        n_items = sum(1 for _r, kind, _l in self.rows if kind == ROW_ITEM)
+        n_extra = len(self.rows) - n_items
+        visible = max(1, min(n_items, self.args.max_lines) + n_extra)
+        height = visible * ROW_HEIGHT
+        self.scroller.set_min_content_height(height)
+        self.scroller.set_max_content_height(height)
+
+    def set_width(self, width):
+        """Widen the panel (used when a refresh brings longer items)."""
+        width = max(self.width, min(MAX_WIDTH, width))
+        if width == self.width:
+            return
+        self.width = width
+        self.win.set_size_request(width, -1)
+        if self.anchor_x is not None and self.args.anchor_align == "center":
+            self.LS.set_margin(self.win, self.LS.Edge.LEFT,
+                               self.anchor_margin(self.anchor_x, width, self.anchor_y))
+        self.win.queue_resize()
+
+    def row_index(self, kind):
+        for idx, (_row, row_kind, _label) in enumerate(self.rows):
+            if row_kind == kind:
+                return idx
+        return None
+
+    def set_row_text(self, idx, text, busy=False):
+        if idx is None or idx >= len(self.rows):
+            return
+        row, _kind, _label = self.rows[idx]
+        row.get_child().set_text(text)
+        ctx = row.get_style_context()
+        if busy:
+            ctx.add_class("busy")
+        else:
+            ctx.remove_class("busy")
 
     def monitor_for(self, x, y):
         display = self.Gdk.Display.get_default()
@@ -261,7 +436,7 @@ class Dropdown:
         return int(max(left, geo.x + 8))
 
     def apply_selection(self):
-        for idx, row in enumerate(self.rows):
+        for idx, (row, _kind, _label) in enumerate(self.rows):
             ctx = row.get_style_context()
             if idx == self.selected:
                 ctx.add_class("selected")
@@ -269,21 +444,78 @@ class Dropdown:
                 ctx.remove_class("selected")
 
     def move(self, step):
-        self.selected = max(0, min(len(self.items) - 1, self.selected + step))
+        self.selected = max(0, min(len(self.rows) - 1, self.selected + step))
+        dbg(f"move {step:+d} -> selected={self.selected}")
         self.apply_selection()
 
     def choose(self, idx=None):
+        """Activate a row: items print themselves, Cancel dismisses, Refresh
+        repopulates the panel without closing it."""
         if idx is None:
             idx = self.selected
-        if self.items:
-            self.finish(0, self.items[idx])
+        if not self.rows or idx >= len(self.rows):
+            return
+        _row, kind, label = self.rows[idx]
+        dbg(f"choose idx={idx} kind={kind} label={label!r}")
+        if kind == ROW_ITEM:
+            self.finish(0, label)
+        elif kind == ROW_CANCEL:
+            self.finish(1, None)
+        else:
+            self.start_refresh()
+
+    # --------------------------------------------------------------- refresh
+
+    def start_refresh(self):
+        """Run --refresh-cmd in a worker thread so the panel keeps painting
+        (and stays Esc-able) while the Wi-Fi scan takes its ~2 s."""
+        if self.refreshing:
+            return
+        dbg(f"refresh start: {self.args.refresh_cmd!r}")
+        self.refreshing = True
+        self.set_row_text(self.row_index(ROW_REFRESH), REFRESHING_LABEL, busy=True)
+
+        def worker():
+            items, err = [], "refresh failed"
+            try:
+                proc = subprocess.run(self.args.refresh_cmd, shell=True,
+                                      capture_output=True, text=True, timeout=90)
+                items = [ln.rstrip("\n") for ln in proc.stdout.splitlines()
+                         if ln.rstrip("\n") != ""]
+                if proc.returncode != 0 or not items:
+                    err = (proc.stderr or "").strip() or f"exit code {proc.returncode}"
+                    items = []
+            except Exception as exc:                      # noqa: BLE001
+                err = str(exc)
+            self.GLib.idle_add(self.finish_refresh, items, err)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def finish_refresh(self, items, err):
+        dbg(f"refresh done: {len(items)} items, err={err!r}")
+        self.refreshing = False
+        if items:
+            self.items = items
+            self.set_width(auto_width(items, self.args.prompt))
+        else:
+            try:
+                subprocess.run(["notify-send", "-a", "waybar-dropdown",
+                                "-u", "critical", "Menu refresh failed", err],
+                               check=False, timeout=5)
+            except Exception:                             # noqa: BLE001
+                pass
+        self.selected = 0
+        self.build_rows()
+        return False                                      # do not repeat
 
     def on_row_click(self, _row, _event, idx):
+        dbg(f"click row {idx}")
         self.choose(idx)
         return True
 
     def on_row_hover(self, _row, event, idx):
         if event.detail != self.Gdk.NotifyType.INFERIOR:
+            dbg(f"hover row {idx}")
             self.selected = idx
             self.apply_selection()
         return False
@@ -293,6 +525,7 @@ class Dropdown:
 
     def on_key(self, _win, event):
         key = event.keyval
+        dbg(f"key {event.string!r} ({key})")
         if key == self.Gdk.KEY_Escape:
             self.finish(1, None)
         elif self.args.password:
@@ -304,21 +537,51 @@ class Dropdown:
         elif key == self.Gdk.KEY_Down:
             self.move(1)
         elif key == self.Gdk.KEY_Home:
-            self.move(-len(self.items))
+            self.move(-len(self.rows))
         elif key == self.Gdk.KEY_End:
-            self.move(len(self.items))
+            self.move(len(self.rows))
         return True
 
     def on_focus_in(self, *_a):
+        dbg("focus-in")
         self.had_focus = True
         return False
 
     def on_focus_out(self, *_a):
-        # Ignore focus transitions that happen while the panel is still being
-        # mapped (other layer surfaces coming and going): only a real
-        # "clicked somewhere else" after the grace period closes the menu.
-        if self.had_focus and time.monotonic() - self.map_time > 0.6:
+        dbg(f"focus-out staged={self.regrab_staged} stay_open={self.args.stay_open}")
+        if self.regrab_staged:                 # our own NONE step of the dance
+            return False
+        self.had_focus = False
+        if self.args.stay_open:
+            # Requirement: losing focus (or sitting idle) must never close the
+            # menu — only Esc, the Cancel row or picking an item may do that.
+            if self.args.refocus:
+                self.GLib.timeout_add(120, self.stage_regrab)
+            return False
+        # Default (legacy) behaviour: a real "clicked somewhere else" after the
+        # grace period closes the menu.
+        if time.monotonic() - self.map_time > 0.6:
             self.finish(1, None)
+        return False
+
+    def stage_regrab(self):
+        """First half of the keyboard re-grab; skipped while a refresh is
+        running (the panel is already doing something) or right after a pick."""
+        self.regrab_staged = False
+        if (self.args.refocus and not self.refreshing and not self.done
+                and time.monotonic() - self.regrab_at > 0.4):
+            dbg("regrab: keyboard mode NONE")
+            self.regrab_staged = True
+            self.LS.set_keyboard_mode(self.win, self.LS.KeyboardMode.NONE)
+            self.GLib.timeout_add(120, self.commit_regrab)
+        return False
+
+    def commit_regrab(self):
+        self.regrab_staged = False
+        if not self.done:
+            dbg("regrab: keyboard mode EXCLUSIVE")
+            self.LS.set_keyboard_mode(self.win, self.LS.KeyboardMode.EXCLUSIVE)
+            self.regrab_at = time.monotonic()
         return False
 
     def finish(self, rc, text):
@@ -350,11 +613,19 @@ def main():
             "width": args.width or auto_width(items, args.prompt),
             "max_lines": args.max_lines,
             "margin_top": args.margin_top,
+            "margin_bottom": args.margin_bottom,
             "margin_right": args.margin_right,
             "anchor": anchor,
             "anchor_edge": args.anchor_edge,
+            "anchor_align": args.anchor_align,
             "waybar_position_bottom": waybar_position_bottom(),
             "cursor": list(cursor) if cursor else None,
+            "stay_open": args.stay_open,
+            "refocus": args.refocus,
+            "cancel": args.cancel if not args.password else None,
+            "refresh_cmd": args.refresh_cmd or None,
+            "display_rows": len(items) + (1 if args.refresh_cmd else 0)
+                            + (1 if args.cancel and not args.password else 0),
             "items": items,
         }, ensure_ascii=False, indent=2))
         return 0

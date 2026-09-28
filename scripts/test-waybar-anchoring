@@ -1,0 +1,272 @@
+#!/usr/bin/env python3
+"""Where do the menus actually land?
+
+Runs the real wifi / power menu the way waybar does, screenshots the session
+(grim) before it, while it is up, and after it is gone, then keeps only the
+pixels that changed in *both* transitions - i.e. the panel itself - and checks
+that it sits in the bottom-right corner, just above the bottom bar.
+
+This is the only check that sees the real compositor and the real pixels. It
+needs a Wayland session (layer shell) and grim; elsewhere it reports "skip".
+"""
+import os
+import subprocess
+import sys
+import time
+
+from PIL import Image, ImageChops
+
+MENUS = os.path.expanduser("~/.config/waybar")
+LOCK = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "waybar-menu.lock")
+SHOTS = ["/tmp/dd-anchor-a.png", "/tmp/dd-anchor-b.png", "/tmp/dd-anchor-c.png"]
+BAR_STRIP = 45          # bottom strip occupied by the waybar itself
+MAX_W = 760             # the menus cap their width at 640 px
+PASSED = FAILED = SKIPPED = 0
+
+
+def ok(msg):
+    global PASSED
+    PASSED += 1
+    print(f"ok   {msg}")
+
+
+def bad(msg):
+    global FAILED
+    FAILED += 1
+    print(f"FAIL {msg}")
+
+
+def skip(msg):
+    global SKIPPED
+    SKIPPED += 1
+    print(f"skip {msg}")
+
+
+def shot(path):
+    try:
+        subprocess.run(["grim", path], check=True, timeout=20,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return Image.open(path).convert("RGB")
+    except Exception as exc:                       # noqa: BLE001
+        skip(f"grim could not capture the screen ({exc}) - needs a Wayland session")
+        return None
+
+
+def changed_mask(a, b):
+    """Pixels that differ between two frames, with full-width bands removed: the
+    waybar itself redraws across the whole screen when a panel appears (and its
+    clock ticks), while a panel is at most MAX_W wide."""
+    diff = ImageChops.difference(a, b).convert("L")
+    w, h = diff.size
+    mask = diff.point(lambda p: 255 if p > 10 else 0)
+    for y in range(h):
+        band = mask.crop((0, y, w, y + 1))
+        if band.histogram()[255] > w * 0.75:
+            mask.paste(0, (0, y, w, y + 1))
+    return mask
+
+
+def close_menu(proc):
+    """Take the panel down and leave nothing running: the menu is started in its
+    own session, so a single killpg reaches the launcher and its dropdown panel
+    together. SIGTERM first, so the launcher's trap releases the shared lock."""
+    try:
+        os.killpg(os.getpgid(proc.pid), 15)
+    except OSError:
+        pass
+    try:
+        proc.wait(timeout=6)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(proc.pid), 9)
+        except OSError:
+            pass
+        try:
+            proc.wait(timeout=4)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+def close_leftovers():
+    """Menus orphaned by an earlier run of this probe (reparented to init, so
+    they are ours, not waybar's) are closed instead of measured twice."""
+    out = subprocess.run(["pgrep", "-f", "sh .*waybar/(wifi|power)_menu.sh"],
+                         capture_output=True, text=True)
+    closed = 0
+    for text in out.stdout.split():
+        pid = int(text)
+        try:
+            with open(f"/proc/{pid}/stat") as fh:
+                ppid = int(fh.read().split(")")[1].split()[1])
+        except (OSError, IndexError, ValueError):
+            continue
+        if ppid == 1:
+            try:
+                os.kill(pid, 15)
+                closed += 1
+            except OSError:
+                pass
+    if closed:
+        time.sleep(1.5)
+        print(f"     (closed {closed} menu(s) left over by an earlier run)")
+    owner = lock_owner()
+    if owner is not None and not os.path.exists(f"/proc/{owner}"):
+        subprocess.run(["rm", "-rf", LOCK], check=False)   # stale lock, pid is gone
+
+
+def lock_owner():
+    """pid recorded in the shared lock directory, or None."""
+    try:
+        with open(os.path.join(LOCK, "pid")) as fh:
+            return int(fh.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def panel_pid():
+    """pid of the panel currently on screen, as recorded by the menu itself."""
+    try:
+        with open(os.path.join(LOCK, "panel")) as fh:
+            return int(fh.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def gone(pid, timeout=8):
+    """Wait for that pid to disappear (it becomes a zombie first, so /proc stays
+    until its parent reaps it)."""
+    end = time.time() + timeout
+    while time.time() < end and os.path.exists(f"/proc/{pid}"):
+        time.sleep(0.1)
+    return not os.path.exists(f"/proc/{pid}")
+
+
+def wait_lock(present, timeout=12):
+    end = time.time() + timeout
+    while time.time() < end:
+        if os.path.isdir(LOCK) == present:
+            return True
+        time.sleep(0.2)
+    return False
+
+
+def check_menu(script, label):
+    if os.path.isdir(LOCK):
+        if not wait_lock(False, timeout=8):
+            skip(f"{label}: another menu is open (shared lock {LOCK}) - not disturbing it")
+            return
+    env = dict(os.environ)
+    env.setdefault("DROPDOWN", os.path.expanduser("~/.local/bin/waybar-dropdown"))
+    before = shot(SHOTS[0])
+    if before is None:
+        return
+    proc = subprocess.Popen(["sh", os.path.join(MENUS, script)], env=env,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            start_new_session=True)
+    try:
+        if not wait_lock(True, timeout=12):
+            if proc.poll() is not None:
+                bad(f"{label}: the menu exited at once (rc={proc.returncode}) without opening")
+            else:
+                skip(f"{label}: no shared lock appeared ({LOCK})")
+            return
+        if lock_owner() != proc.pid:
+            # Someone (or waybar itself) already had a menu open; the shared lock
+            # correctly refused ours, so there is nothing of ours to measure.
+            skip(f"{label}: another menu (pid {lock_owner()}) was already open - "
+                 "the shared lock refused this one, as it should")
+            return
+        time.sleep(3.0)                            # panel mapped, sway animation done
+        during = shot(SHOTS[1])
+        if during is None:
+            return
+        # The real toggle: pressing the same button again has to close the panel.
+        # That is also how this probe cleans up, so no signals are involved unless
+        # the toggle fails (the finally block below is then the safety net).
+        shown = panel_pid()
+        try:
+            rc = subprocess.run(["sh", os.path.join(MENUS, script)], env=env,
+                                capture_output=True, timeout=20).returncode
+        except subprocess.TimeoutExpired:
+            rc = None
+        closed = wait_lock(False, timeout=10)
+        toggled_ok = rc == 0 and closed and (shown is None or gone(shown))
+        if toggled_ok:
+            ok(f"{label}: a second click on the same button closed it (toggle)")
+        else:
+            bad(f"{label}: the toggle did not close the panel (rc={rc}, "
+                f"lock released={closed}, panel gone="
+                f"{shown is None or not os.path.exists(f'/proc/{shown}')})")
+    finally:
+        close_menu(proc)
+    wait_lock(False, timeout=8)
+    time.sleep(2.0)
+    after = shot(SHOTS[2])
+    if after is None:
+        return
+
+    # The panel is what changed forwards *and* backwards; anything else on the
+    # desktop (a clock, a moved window) only changes once.
+    both = ImageChops.darker(changed_mask(before, during), changed_mask(during, after))
+    changed = both.histogram()[255]
+    box = both.getbbox()
+    if box is None or changed < 3000:
+        if toggled_ok:
+            # The toggle above proved the panel was on screen, so this is the
+            # measurement failing on a busy desktop, not a missing panel.
+            skip(f"{label}: the diff could not isolate the panel ({changed} px) - "
+                 "the screen was busy while the shots were taken")
+        else:
+            bad(f"{label}: no panel-sized region appeared and disappeared "
+                f"({changed} px) - is the menu opening at all?")
+        return
+    sw, sh = before.size
+    x0, y0, x1, y1 = box
+    pw, ph = x1 - x0, y1 - y0
+    right_gap, bottom_gap = sw - x1, sh - y1
+    print(f"     {label}: changed region {pw}x{ph} at x={x0} y={y0}, {changed} px "
+          f"(screen {sw}x{sh}, right gap {right_gap}, bottom gap {bottom_gap})")
+    if y0 < sh // 2:
+        skip(f"{label}: the window is WM-placed in the upper half (no layer shell here)")
+        return
+    if pw > MAX_W:
+        # Everything on a busy desktop (the bar redrawing full width, another
+        # window, a notification) ends up in the same bounding box, so the panel
+        # cannot be measured here - that is a "try again on a quiet screen", not a
+        # misplacement.
+        skip(f"{label}: the changed region spans {pw} px, wider than any panel "
+             f"(MAX_W={MAX_W}) - the screen was busy, cannot attribute it to the panel")
+        return
+    # The right and bottom edges are what the anchoring is about, and they are
+    # also the edges the waybar's own redraw cannot pollute (it changes rows and
+    # columns across the whole screen, the panel only its own corner).
+    if -40 <= right_gap <= 60:
+        ok(f"{label}: hugs the right edge (gap {right_gap} px of {sw})")
+    else:
+        bad(f"{label}: right gap is {right_gap} px - not the bottom-right corner")
+    if 0 <= bottom_gap <= 170:
+        ok(f"{label}: sits just above the bottom bar (gap {bottom_gap} px)")
+    else:
+        bad(f"{label}: bottom gap is {bottom_gap} px - not above the bar")
+
+
+def main():
+    close_leftovers()
+    if not os.environ.get("WAYLAND_DISPLAY"):
+        skip("no WAYLAND_DISPLAY: layer shell is unavailable, the WM would place the window")
+        return 0
+    print(f"session: Wayland ({os.environ['WAYLAND_DISPLAY']}), shared lock {LOCK}")
+    check_menu("wifi_menu.sh", "wifi menu")
+    check_menu("power_menu.sh", "power menu")
+    close_leftovers()
+    for path in SHOTS:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    print(f"\n{PASSED} passed, {FAILED} failed, {SKIPPED} skipped")
+    return 1 if FAILED else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

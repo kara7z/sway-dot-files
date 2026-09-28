@@ -1,0 +1,469 @@
+#!/usr/bin/env python3
+"""Interactive checks for waybar-dropdown: what the panel does when focus moves
+away, when Escape is pressed, when the Cancel row is activated, and when the
+Refresh row re-scans without closing the panel.
+
+Driven through X11/XWayland (:0) with XTEST keys (python-xlib), so xdotool is not
+needed. Layer-shell only exists under Wayland, but every GTK decision that
+closes / keeps / refreshes the panel is the same code path sway exercises.
+
+Two things keep the result trustworthy:
+  * the panel window is matched by _NET_WM_PID, so a leftover menu from an
+    earlier run can never be mistaken for this run's own child;
+  * the panel runs with WAYBAR_DROPDOWN_DEBUG=1 and its focus/key/click trace is
+    compared with what the test sent. If a panel was also driven from outside
+    (someone clicking or typing on the visible menu while the test runs), the
+    check is reported as "skip" with the evidence instead of a false failure.
+"""
+import os
+import signal
+import subprocess
+import sys
+import time
+
+from Xlib import X, XK, display as xldisplay
+from Xlib.error import ConnectionClosedError
+from Xlib.ext.xtest import fake_input
+from Xlib.protocol import event
+
+BIN = os.environ.get("BIN", os.path.expanduser("~/.local/bin/waybar-dropdown"))
+LOG = "/tmp/dd-interactive-menu.err"
+PASSED = FAILED = SKIPPED = 0
+D = None
+
+
+def connect():
+    display = xldisplay.Display(os.environ.get("DISPLAY", ":0"))
+    return {"d": display,
+            "root": display.screen().root,
+            "active": display.intern_atom("_NET_ACTIVE_WINDOW"),
+            "pid": display.intern_atom("_NET_WM_PID"),
+            "stack": display.intern_atom("_NET_CLIENT_LIST_STACKING")}
+
+
+def ok(msg):
+    global PASSED
+    PASSED += 1
+    print(f"ok   {msg}")
+
+
+def bad(msg, detail=""):
+    global FAILED
+    FAILED += 1
+    print(f"FAIL {msg}")
+    if detail:
+        print("     " + detail.strip().replace("\n", "\n     "))
+
+
+def skip(msg):
+    global SKIPPED
+    SKIPPED += 1
+    print(f"skip {msg}")
+
+
+def check(cond, msg, detail=""):
+    ok(msg) if cond else bad(msg, detail)
+
+
+def env():
+    e = dict(os.environ)
+    e.update(GDK_BACKEND="x11", GTK_A11Y="none", NO_AT_BRIDGE="1",
+             WAYBAR_DROPDOWN_DEBUG="1")   # panel trace -> /tmp/dd-interactive-menu.err
+    return e
+
+
+def kill_orphans():
+    """Panels left over from an earlier crashed run. Matches only real panel
+    processes (argv[0] is the panel, or python3 <panel>), so a shell whose
+    command line merely mentions the path can never be hit."""
+    me = os.getpid()
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit() or int(entry) == me:
+            continue
+        try:
+            with open(f"/proc/{entry}/cmdline", "rb") as fh:
+                argv = [a.decode(errors="replace") for a in fh.read().split(bytes([0])) if a]
+        except OSError:
+            continue
+        if not argv:
+            continue
+        if argv[0] == BIN or (os.path.basename(argv[0]).startswith("python")
+                              and len(argv) > 1 and argv[1] == BIN):
+            try:
+                os.kill(int(entry), signal.SIGTERM)
+            except OSError:
+                pass
+
+
+def launch(args, items, tag):
+    with open(LOG, "a") as log:
+        log.write(f"\n===== {tag}: {' '.join(args)}\n")
+    p = subprocess.Popen([BIN] + args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                         stderr=open(LOG, "a"), text=True, env=env())
+    p.stdin.write("".join(i + "\n" for i in items))
+    p.stdin.close()
+    return p
+
+
+def menu_window(pid):
+    """The panel window owned by exactly that child process (or None)."""
+    d, root = D["d"], D["root"]
+    prop = root.get_full_property(D["stack"], X.AnyPropertyType)
+    for wid in (prop.value if prop else []):
+        w = d.create_resource_object("window", wid)
+        try:
+            cls = w.get_wm_class()
+            wpid = w.get_full_property(D["pid"], X.AnyPropertyType)
+        except Exception:
+            continue
+        if cls and any("dropdown" in c for c in cls) and wpid and wpid.value \
+                and wpid.value[0] == pid:
+            return w
+    return None
+
+
+def wait_window(p, timeout=12):
+    end = time.time() + timeout
+    while time.time() < end:
+        if p.poll() is not None:
+            return None
+        w = menu_window(p.pid)
+        if w is not None:
+            return w
+        time.sleep(0.1)
+    return None
+
+
+def activate(w):
+    """Fake "the user clicked that window": ask the WM to activate it (sway
+    honours _NET_ACTIVE_WINDOW and routes XTEST keys there), then confirm."""
+    d, root = D["d"], D["root"]
+    msg = event.ClientMessage(window=w.id, client_type=D["active"],
+                              data=(32, [2, 0, 0, 0, 0]))  # 5 x 32 bit = 20 B
+    root.send_event(msg, event_mask=X.SubstructureNotifyMask)
+    d.sync()
+    end = time.time() + 2
+    while time.time() < end:
+        try:
+            if d.get_input_focus().focus.id == w.id:
+                return True
+        except Exception:
+            pass
+        d.sync()
+        time.sleep(0.1)
+    return False
+
+
+def park_pointer():
+    """Move the pointer off the panel. A menu that appears under a stationary
+    pointer highlights the row beneath it, which would make the keyboard row
+    counts in this test depend on where the mouse happens to be."""
+    try:
+        d, root = D["d"], D["root"]
+        root.warp_pointer(X.NONE, 0, 0, 0, 0, 5, 5)
+        d.sync()
+        time.sleep(0.2)
+    except Exception:
+        pass
+
+
+def pointer_pos():
+    try:
+        q = D["d"].screen().root.query_pointer()
+        return q.root_x, q.root_y
+    except Exception:
+        return None
+
+
+def key(name):
+    d = D["d"]
+    kc = d.keysym_to_keycode(getattr(XK, "XK_" + name))
+    fake_input(d, X.KeyPress, kc)
+    fake_input(d, X.KeyRelease, kc)
+    d.sync()
+
+
+def outcome(p, timeout=6):
+    """(rc, stdout) once the panel exits; (None, None) while it stays open."""
+    try:
+        rc = p.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return None, None
+    return rc, p.stdout.read().strip()
+
+
+def stderr_tail():
+    try:
+        with open(LOG) as fh:
+            return "".join(fh.readlines()[-6:])
+    except OSError:
+        return ""
+
+
+def events(pid):
+    """What the panel itself recorded, from its debug trace."""
+    marker = f"[waybar-dropdown {pid}] "
+    lines = []
+    try:
+        with open(LOG) as fh:
+            for ln in fh:
+                if ln.startswith(marker):
+                    lines.append(ln[len(marker):].strip())
+    except OSError:
+        pass
+    return {"keys": [l for l in lines if l.startswith("key ")],
+            "clicks": [l for l in lines if l.startswith("click ")],
+            "hovers": [l for l in lines if l.startswith("hover row")],
+            "chooses": [l for l in lines if l.startswith("choose ")],
+            "refreshes": [l for l in lines if l.startswith("refresh start")],
+            "focus_out": [l for l in lines if l.startswith("focus-out")],
+            "focus_in": [l for l in lines if l.startswith("focus-in")]}
+
+
+def outside_input(ev, sent_keys):
+    """True when the panel saw more input than this test sent (human at the
+    machine, or a leftover from an earlier run). Hovers count: a panel that
+    appears under the pointer highlights a row by itself, which moves the
+    keyboard selection away from where this test expects it."""
+    return len(ev["keys"]) != sent_keys or bool(ev["clicks"]) or bool(ev["hovers"])
+
+
+def check_open(p, tag):
+    """The panel must still be there."""
+    if p.poll() is None:
+        ok(tag)
+        return True
+    ev = events(p.pid)
+    detail = (f"rc={p.returncode}, keys={len(ev['keys'])}, clicks={ev['clicks']}, "
+              f"chooses={ev['chooses']}")
+    if outside_input(ev, 0):
+        skip(f"{tag} [panel closed from outside: {detail}]")
+    else:
+        bad(tag, f"panel exited on its own: {detail}\n{stderr_tail()}")
+    return False
+
+
+def check_exit(p, want_rc, sent_keys, tag, want_out=None, want_prefix=None):
+    """The panel must have exited with the expected result, unless it was driven
+    from outside too (then the outcome says nothing about the code)."""
+    rc, out = outcome(p)
+    ev = events(p.pid)
+    detail = (f"rc={rc}, out={out!r}, keys={len(ev['keys'])} (sent {sent_keys}), "
+              f"clicks={ev['clicks']}, chooses={ev['chooses']}")
+    if outside_input(ev, sent_keys):
+        skip(f"{tag} [panel driven from outside: {detail}]")
+        return
+    good = rc == want_rc
+    if want_out is not None:
+        good = good and out == want_out
+    if want_prefix is not None:
+        good = good and (out or "").startswith(want_prefix)
+    check(good, tag, detail)
+
+
+def cleanup(*procs):
+    for p in procs:
+        if p is not None and p.poll() is None:
+            p.terminate()
+            try:
+                p.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                p.kill()
+
+
+def section_text(tag):
+    """Everything a phase's panel logged (its own debug trace and GTK notes)."""
+    out, inside = [], False
+    with open(LOG) as fh:
+        for ln in fh:
+            if ln.startswith("===== "):
+                inside = ln.startswith(f"===== {tag}:")
+                continue
+            if inside:
+                out.append(ln)
+    return "".join(out)
+
+
+def layer_shell_active(tag):
+    """False when the panel had to fall back to a plain X11/XDG window: then the
+    WM places the window (usually centred) and anchor assertions mean nothing."""
+    return "Falling back to XDG shell" not in section_text(tag)
+
+
+def panel_rect(w):
+    """Panel rectangle in root coordinates: (x, y, width, height)."""
+    try:
+        g = w.get_geometry()
+        t = D["root"].translate_coords(w, 0, 0)
+        return t.x, t.y, g.width, g.height
+    except Exception:
+        return None
+
+
+def screen_size():
+    try:
+        g = D["root"].get_geometry()
+        return g.width, g.height
+    except Exception:
+        return None
+
+
+def main():
+    global D
+    kill_orphans()
+    D = connect()
+    d, root = D["d"], D["root"]
+    thief = root.create_window(10, 10, 320, 200, 0, d.screen().root_depth,
+                               X.InputOutput, X.CopyFromParent,
+                               background_pixel=d.screen().white_pixel)
+    thief.set_wm_name("focus-thief")
+    thief.map()
+    d.sync()
+    activated = activate(thief)   # stands in for "the user clicked elsewhere"
+    if not activated:
+        skip("could not pre-focus the thief window (WM refused) - focus checks "
+             "may be unreliable")
+
+    print(f"\npointer at {pointer_pos()} - parking it out of the panel")
+    park_pointer()
+
+    print("\n== bottom-right anchoring (the args both menus use) ==")
+    park_pointer()
+    p = launch(["--anchor-cursor", "--anchor-align", "right", "--anchor-edge", "bottom"],
+               ["One", "Two"], "anchor")
+    w = wait_window(p)
+    if w is None:
+        bad("anchoring panel never mapped", stderr_tail())
+        cleanup(p)
+        return 1
+    rect, scr = panel_rect(w), screen_size()
+    if rect and scr:
+        x, y, pw, ph = rect
+        right_gap, bottom_gap = scr[0] - (x + pw), scr[1] - (y + ph)
+        print(f"     panel x={x} y={y} {pw}x{ph}; screen {scr[0]}x{scr[1]}; pointer {pointer_pos()}")
+        if layer_shell_active("anchor"):
+            check(-40 <= right_gap <= 60,
+                  f"panel hugs the right edge (gap {right_gap} px of {scr[0]} px)", f"rect={rect}")
+            check(0 <= bottom_gap <= 140,
+                  f"panel sits above the bottom bar (gap {bottom_gap} px)", f"rect={rect}")
+        else:
+            skip("anchor geometry needs layer shell (this run fell back to X11, so the "
+                 f"WM centred the {pw}x{ph} window at x={x} y={y}) - run it on a Wayland "
+                 "session for the real bottom-right placement")
+    else:
+        skip("the WM reported no usable geometry")
+    activate(w)
+    time.sleep(0.4)
+    key("Escape")
+    check_exit(p, 1, 1, "anchoring panel closes on Escape")
+    cleanup(p)
+
+    print("\n== focus behaviour ==")
+    p = launch(["--anchor-x", "600", "--stay-open", "--refocus"],
+               ["One", "Two", "Three"], "stay-open")
+    w = wait_window(p)
+    if w is None:
+        bad("--stay-open panel never mapped", stderr_tail())
+        cleanup(p)
+        return 1
+    ok("--stay-open panel maps")
+    activate(thief)
+    time.sleep(1.5)
+    if check_open(p, "focus moves to another window -> panel stays open"):
+        # Informational: under Wayland the layer-shell EXCLUSIVE keyboard grab
+        # means the panel often never loses focus at all, so a missing focus-out
+        # is not a failure (under X11 the grab is a no-op and it does happen).
+        ev = events(p.pid)
+        print(f"     (panel trace: {len(ev['focus_out'])} focus-out, "
+              f"{len(ev['focus_in'])} focus-in)")
+    activate(w)
+    time.sleep(0.4)
+    key("Escape")
+    check_exit(p, 1, 1, "Escape closes it with rc=1 and no output", want_out="")
+    cleanup(p)
+
+    p = launch(["--anchor-x", "600"], ["One", "Two"], "default-mode")
+    w = wait_window(p)
+    if w is None:
+        bad("default-mode panel never mapped", stderr_tail())
+    else:
+        activate(thief)
+        check_exit(p, 1, 0, "default mode still closes on focus loss")
+        cleanup(p)
+
+    print("\n== Cancel and Refresh rows ==")
+    park_pointer()
+    p = launch(["--anchor-x", "600", "--stay-open", "--cancel"],
+               ["One", "Two"], "cancel-row")
+    w = wait_window(p)
+    if w is None:
+        bad("cancel-row panel never mapped", stderr_tail())
+    else:
+        activate(w)
+        time.sleep(0.4)
+        key("End")
+        key("Return")
+        check_exit(p, 1, 2, "Cancel row closes without choosing", want_out="")
+        cleanup(p)
+
+    refresh_cmd = "printf 'Fresh One\\nFresh Two\\nFresh Three\\nFresh Four\\n'"
+    p = launch(["--anchor-x", "600", "--stay-open", "--refresh-cmd", refresh_cmd],
+               ["Old A", "Old B"], "refresh-row")
+    w = wait_window(p)
+    if w is None:
+        bad("refresh-row panel never mapped", stderr_tail())
+        cleanup(p)
+        return 1
+    activate(w)
+    time.sleep(0.4)
+    key("End")        # last row is the extra Refresh row
+    key("Return")
+    end = time.time() + 8
+    while time.time() < end and not events(p.pid)["refreshes"]:
+        time.sleep(0.2)
+    ev = events(p.pid)
+    if outside_input(ev, 2):
+        skip(f"Refresh row [panel driven from outside: keys={len(ev['keys'])}, "
+             f"clicks={ev['clicks']}]")
+    else:
+        check(len(ev["refreshes"]) == 1,
+              "Return on the Refresh row runs --refresh-cmd exactly once",
+              f"refresh starts: {len(ev['refreshes'])}")
+    if check_open(p, "Refresh keeps the panel open (no close/reopen flash)"):
+        key("Return")   # selection is back on row 0 -> a freshly loaded item
+        check_exit(p, 0, 3, "the list was repopulated in place", want_prefix="Fresh")
+    cleanup(p)
+
+    print("\n== keyboard selection ==")
+    park_pointer()
+    p = launch(["--anchor-x", "600", "--stay-open", "--cancel"],
+               ["Alpha", "Beta", "Gamma"], "keyboard")
+    w = wait_window(p)
+    if w is None:
+        bad("keyboard panel never mapped", stderr_tail())
+        cleanup(p)
+        return 1
+    activate(w)
+    time.sleep(0.4)
+    key("Down")
+    key("Down")
+    key("Return")
+    check_exit(p, 0, 3, "Down Down Enter picks the third row", want_out="Gamma")
+    cleanup(p)
+
+    try:
+        thief.destroy()
+        d.sync()
+    except Exception:
+        pass
+    print(f"\n{PASSED} passed, {FAILED} failed, {SKIPPED} skipped")
+    return 1 if FAILED else 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except ConnectionClosedError:
+        print("\nHARNESS ERROR: the X connection was closed by the server "
+              "(Xwayland restart) - re-run the test")
+        sys.exit(2)

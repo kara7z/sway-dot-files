@@ -1,0 +1,224 @@
+#!/bin/sh
+# Self-checks for ~/.local/bin/waybar-dropdown and the waybar menu scripts.
+# Needs a running X server (XWayland under sway is enough) plus xdotool + xterm.
+# Usage: test-waybar-dropdown [-v]
+set -u
+BIN="${BIN:-$HOME/.local/bin/waybar-dropdown}"
+MENUS="${MENUS:-$HOME/.config/waybar}"
+TMPLIST='Alpha One\nBeta Two\nGamma Three\nDelta Four'
+
+export DISPLAY="${DISPLAY:-:0}"
+export GDK_BACKEND=x11
+export GTK_A11Y=none
+export NO_AT_BRIDGE=1
+export WAYBAR_NICE=1
+VERBOSE=0
+[ "${1:-}" = "-v" ] && VERBOSE=1
+
+pass=0; fail=0
+ok()  { pass=$((pass+1)); printf 'ok   %s\n' "$1"; }
+bad() { fail=$((fail+1)); printf 'FAIL %s\n' "$1"; }
+chk() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (want '$3', got '$2')"; fi; }
+
+# json <file> <dotted.path>  ->  value of that key (nested dicts via a.b)
+json() {
+    python3 -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+for k in sys.argv[2].split("."):
+    d=d[k]
+print(d)' "$1" "$2" 2>/dev/null
+}
+
+# dry <outfile> <items|''> <args...>   (--dry-run, resolved config to outfile)
+dry() {
+    out=$1; items=$2; shift 2
+    if [ -n "$items" ]; then
+        printf '%b' "$items" | timeout 15 "$BIN" "$@" --dry-run >"$out" 2>"$out.err"
+    else
+        : | timeout 15 "$BIN" "$@" --dry-run >"$out" 2>"$out.err"
+    fi
+}
+
+printf '\n== waybar-dropdown: argument / geometry model ==\n'
+dry /tmp/dd1.json "$TMPLIST" --anchor-cursor
+chk "mode=list"                    "$(json /tmp/dd1.json mode)"            list
+chk "default max_lines=10"         "$(json /tmp/dd1.json max_lines)"       10
+chk "default margin_right=8"       "$(json /tmp/dd1.json margin_right)"    8
+chk "default anchor_align=center"  "$(json /tmp/dd1.json anchor_align)"    center
+chk "stay_open defaults off"       "$(json /tmp/dd1.json stay_open)"       False
+chk "no Cancel row by default"     "$(json /tmp/dd1.json cancel)"          False
+chk "no refresh row by default"    "$(json /tmp/dd1.json refresh_cmd)"     None
+
+dry /tmp/dd2.json "$TMPLIST" --max-lines 3 --margin-right 12 --width 400
+chk "--max-lines honoured"         "$(json /tmp/dd2.json max_lines)"       3
+chk "--margin-right honoured"      "$(json /tmp/dd2.json margin_right)"    12
+chk "explicit --width wins"        "$(json /tmp/dd2.json width)"           400
+
+# --max-lines applies to items; Cancel/Refresh are always-visible extras
+dry /tmp/dd3.json "$TMPLIST" --cancel --refresh-cmd 'true' --max-lines 2
+chk "extras are extra display rows" "$(json /tmp/dd3.json display_rows)"   6
+chk "refresh_cmd recorded"         "$(json /tmp/dd3.json refresh_cmd)"     true
+chk "cancel row recorded"          "$(json /tmp/dd3.json cancel)"          True
+
+# waybar's bar position decides which edge the panel anchors to (the dropdown
+# has no other way to know where the bar is when the pointer query is missing)
+FAKECFG=/tmp/ddtest-config
+mkdir -p "$FAKECFG/waybar"
+printf '{"position": "bottom"}' > "$FAKECFG/waybar/config"
+XDG_CONFIG_HOME=$FAKECFG dry /tmp/dd4.json "$TMPLIST"
+chk "config position=bottom detected" "$(json /tmp/dd4.json waybar_position_bottom)" True
+printf '{"position": "top"}' > "$FAKECFG/waybar/config"
+XDG_CONFIG_HOME=$FAKECFG dry /tmp/dd5.json "$TMPLIST"
+chk "config position=top detected" "$(json /tmp/dd5.json waybar_position_bottom)" False
+dry /tmp/dd8.json "$TMPLIST" --margin-top 50 --margin-bottom 12 --anchor-edge bottom
+chk "--margin-top honoured"        "$(json /tmp/dd8.json margin_top)"      50
+chk "--margin-bottom honoured"     "$(json /tmp/dd8.json margin_bottom)"   12
+chk "--anchor-edge honoured"       "$(json /tmp/dd8.json anchor_edge)"     bottom
+
+LONG=$(printf 'x%.0s' $(seq 1 70))     # 70 chars -> auto width wants 740 px
+dry /tmp/dd9.json "$LONG"
+chk "wide items clamp to 560"      "$(json /tmp/dd9.json width)"           560
+
+dry /tmp/dd6.json "a" --prompt "WiFi"
+chk "narrow items clamp to 240"    "$(json /tmp/dd6.json width)"           240
+
+reject() {   # reject <label> <args...>
+    label=$1; shift
+    timeout 15 "$BIN" "$@" --dry-run </dev/null >/dev/null 2>&1
+    chk "rejects $label" "$?" 2
+}
+reject "--anchor-edge bogus"   --anchor-edge bogus
+reject "--anchor-align bogus"  --anchor-align bogus
+reject "--max-lines 0"         --max-lines 0
+reject "--max-lines 99"        --max-lines 99
+reject "--width 10"            --width 10
+reject "--margin-right -5"     --margin-right -5
+reject "--margin-top 999"      --margin-top 999
+reject "--cancel with --password" --password --cancel
+reject "--refresh-cmd with --password" --password --refresh-cmd true
+reject "--refocus without --stay-open" --refocus
+
+
+# ------------------------------------------------- single instance (the lock)
+# A stub dropdown lets the whole script run for real without a GUI: it drains
+# the items, sleeps, then reports "cancelled" (so no action is ever executed).
+# Both menus share one lock file; point it at a scratch path so the tests can
+# never touch the lock of a menu that is really open on the desktop.
+export MENU_LOCK=/tmp/dd-menu.lock
+rm -rf "$MENU_LOCK"
+printf '\n== single instance / lock ==\n'
+STUB=/tmp/dd-stub-dropdown
+cat > "$STUB" <<'STUBEOF'
+#!/bin/sh
+printf '%s\n' "$*" > "${STUB_ARGS:-/tmp/dd-stub-args}"
+cat >/dev/null                        # drain the item list
+sleep "${STUB_SLEEP:-0}"
+[ -n "${STUB_CHOICE:-}" ] && printf '%s\n' "$STUB_CHOICE"
+exit "${STUB_RC:-1}"
+STUBEOF
+chmod +x "$STUB"
+
+lock_test() {   # lock_test <script> <lock-dir> <has-list-mode: yes|no>
+    script=$1; lock=$2; haslist=$3; name=$(basename "$script")
+    rm -rf "$lock" /tmp/dd-stub-args-1 /tmp/dd-stub-args-2 /tmp/dd-stub-args-3
+    DROPDOWN=$STUB STUB_SLEEP=5 STUB_ARGS=/tmp/dd-stub-args-1 sh "$script" \
+        >/tmp/dd-lt1.out 2>/tmp/dd-lt1.err &
+    first=$!
+    i=0; while [ ! -d "$lock" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i+1)); done
+    if [ -d "$lock" ]; then ok "$name: lock taken"; else bad "$name: lock never taken"; return; fi
+    # Wait until the menu really is on screen: only then is the panel's pid in the
+    # lock, and that pid is what a toggle has to close.
+    i=0; while [ ! -f /tmp/dd-stub-args-1 ] && [ "$i" -lt 200 ]; do sleep 0.1; i=$((i+1)); done
+    [ -f /tmp/dd-stub-args-1 ] || bad "$name: menu never opened"
+    panel=$(cat "$lock/panel" 2>/dev/null)
+    if [ -n "$panel" ] && kill -0 "$panel" 2>/dev/null; then
+        ok "$name: panel pid recorded in the lock"
+    else
+        bad "$name: no usable panel pid in the lock (a toggle could not close it)"
+    fi
+
+    # While it is open: the Refresh row's list mode must bypass the lock, and the
+    # panel must be asked for the bottom-right corner with the extra rows.
+    if [ "$haslist" = yes ]; then
+        nets=$(sh "$script" --list no 2>/dev/null | grep -c .)
+        if [ "$nets" -gt 0 ]; then ok "list mode works while locked ($nets networks)"; else bad "list mode blocked by the lock"; fi
+        grep -q 'anchor-edge bottom' /tmp/dd-stub-args-1 && ok "menu anchored bottom-right" || bad "menu not anchored bottom-right"
+        grep -q 'stay-open' /tmp/dd-stub-args-1 && ok "menu requested stay-open" || bad "menu missing stay-open"
+        grep -q 'refresh-cmd' /tmp/dd-stub-args-1 && ok "menu offers a refresh row" || bad "menu missing refresh row"
+    fi
+
+    # Same button again: toggle -- the open menu closes and nothing new appears.
+    DROPDOWN=$STUB STUB_ARGS=/tmp/dd-stub-args-2 sh "$script" \
+        >/tmp/dd-lt2.out 2>/tmp/dd-lt2.err
+    chk "$name: toggle click exit code 0" "$?" 0
+    if [ -f /tmp/dd-stub-args-2 ]; then bad "$name: toggle opened a second menu"; else ok "$name: toggle opened no second menu"; fi
+    i=0; while kill -0 "$panel" 2>/dev/null && [ "$i" -lt 40 ]; do sleep 0.1; i=$((i+1)); done
+    if kill -0 "$panel" 2>/dev/null; then bad "$name: toggle left the panel on screen"; else ok "$name: toggle closed the panel"; fi
+    i=0; while [ -d "$lock" ] && [ "$i" -lt 40 ]; do sleep 0.1; i=$((i+1)); done
+    if [ -d "$lock" ]; then bad "$name: lock left behind"; else ok "$name: lock released after the toggle"; fi
+    wait "$first" 2>/dev/null
+
+    # a stale lock (killed launcher) must not block the menu forever
+    mkdir -p "$lock"; echo 999999 > "$lock/pid"
+    DROPDOWN=$STUB STUB_ARGS=/tmp/dd-stub-args-3 sh "$script" >/dev/null 2>&1
+    if [ -f /tmp/dd-stub-args-3 ]; then ok "$name: stale lock recovered"; else bad "$name: stale lock blocks the menu"; fi
+    rm -rf "$lock" /tmp/dd-stub-args-1 /tmp/dd-stub-args-2 /tmp/dd-stub-args-3
+}
+
+lock_test "$MENUS/power_menu.sh" "$MENU_LOCK" no
+lock_test "$MENUS/wifi_menu.sh"  "$MENU_LOCK" yes
+
+# One menu at a time: wifi and power share the lock, so clicking the other button
+# closes the open menu and then opens the one that was clicked -- never both.
+cross_test() {   # cross_test <open-script> <other-script> <other-kind> <label>
+    open_script=$1; other_script=$2; other_kind=$3; label=$4
+    # Control run while nothing is open: the other menu starts normally, so the
+    # swap check below cannot pass just because that menu is broken.
+    rm -rf "$MENU_LOCK" /tmp/dd-stub-args-1 /tmp/dd-stub-args-4
+    DROPDOWN=$STUB STUB_ARGS=/tmp/dd-stub-args-4 STUB_SLEEP=0 sh "$other_script" >/dev/null 2>&1
+    if [ -f /tmp/dd-stub-args-4 ]; then
+        ok "$label: control - the other menu opens when nothing is open"
+    else
+        bad "$label: control - the other menu never opens (test would be vacuous)"
+        rm -rf "$MENU_LOCK" /tmp/dd-stub-args-4
+        return
+    fi
+
+    rm -rf "$MENU_LOCK" /tmp/dd-stub-args-1 /tmp/dd-stub-args-4 /tmp/dd-stub-args-5
+    DROPDOWN=$STUB STUB_SLEEP=5 STUB_ARGS=/tmp/dd-stub-args-1 sh "$open_script" \
+        >/dev/null 2>&1 &
+    first=$!
+    i=0; while [ ! -f /tmp/dd-stub-args-1 ] && [ "$i" -lt 200 ]; do sleep 0.1; i=$((i+1)); done
+    [ -f /tmp/dd-stub-args-1 ] || bad "$label: the first menu never opened"
+    first_panel=$(cat "$MENU_LOCK/panel" 2>/dev/null)
+
+    # Click the other button: it waits for the open menu to be gone (one instance
+    # at a time) and then opens its own.
+    DROPDOWN=$STUB STUB_SLEEP=5 STUB_ARGS=/tmp/dd-stub-args-4 sh "$other_script" \
+        >/dev/null 2>&1 &
+    second=$!
+    i=0; while [ ! -f /tmp/dd-stub-args-4 ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i+1)); done
+    if [ -f /tmp/dd-stub-args-4 ]; then ok "$label: the clicked menu opened"; else bad "$label: the clicked menu did not open"; fi
+    i=0; while kill -0 "$first_panel" 2>/dev/null && [ "$i" -lt 40 ]; do sleep 0.1; i=$((i+1)); done
+    if kill -0 "$first_panel" 2>/dev/null; then
+        bad "$label: the previous panel stayed on screen (two menus at once)"
+    else
+        ok "$label: the previous panel was closed"
+    fi
+    chk "$label: lock handed over to the new menu" "$(cat "$MENU_LOCK/kind" 2>/dev/null)" "$other_kind"
+
+    # Same button again: toggle -- it closes, and the lock goes with it.
+    DROPDOWN=$STUB STUB_ARGS=/tmp/dd-stub-args-5 sh "$other_script" >/dev/null 2>&1
+    if [ -f /tmp/dd-stub-args-5 ]; then bad "$label: the toggle opened a third menu"; else ok "$label: the toggle opened nothing"; fi
+    i=0; while [ -d "$MENU_LOCK" ] && [ "$i" -lt 60 ]; do sleep 0.1; i=$((i+1)); done
+    if [ -d "$MENU_LOCK" ]; then bad "$label: lock stuck after the toggle"; else ok "$label: lock released"; fi
+    wait "$first" "$second" 2>/dev/null
+    rm -rf "$MENU_LOCK" /tmp/dd-stub-args-1 /tmp/dd-stub-args-4 /tmp/dd-stub-args-5
+}
+
+printf '\n== one menu at a time (wifi vs power) ==\n'
+cross_test "$MENUS/wifi_menu.sh"  "$MENUS/power_menu.sh" power "power click while wifi open"
+cross_test "$MENUS/power_menu.sh" "$MENUS/wifi_menu.sh"  wifi  "wifi click while power open"
+
+printf '\n%d passed, %d failed\n' "$pass" "$fail"
+[ "$fail" -eq 0 ]
