@@ -21,7 +21,7 @@ sway-dot-files/
 ├── waybar/
 │   ├── config              # JSONC (// comments, Waybar supports JSONC)
 │   ├── style.css           # black/white + translucent overlays
-│   ├── kblayout.sh         # US/AR/FR poll (jq, 0.25s) + notify-send toast
+│   ├── kblayout.sh         # US/AR/FR poll (jq, 0.25s) -> bar text only (no toast)
 │   ├── kblayout_menu.sh    # anchored layout picker (waybar-dropdown)
 │   ├── wifi_menu.sh        # nmcli (cached) + waybar-dropdown (anchored)
 │   ├── wifi_pass.py        # legacy GTK3 dialog (replaced by dropdown --password)

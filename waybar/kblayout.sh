@@ -1,6 +1,7 @@
 #!/bin/sh
-# waybar custom/kblayout — prints the active layout (US/AR/FR) for the bar and
-# pops a short notify-send toast whenever the layout changes.
+# waybar custom/kblayout — prints the active layout (US/AR/FR) for the bar.
+# No popup, toast or notification on change: the bar indicator text updating IS
+# the feedback, and clicking the button opens kblayout_menu.sh (just the menu).
 #
 # 2026-09-24 fixes:
 #   * jq instead of python3 per poll: 31ms -> 3.8ms (the old version burned ~30%
@@ -11,8 +12,8 @@
 #     restart added another popup-spamming copy. The new copy now kills the
 #     previous one (verified via /proc/<pid>/cmdline) before taking over.
 #
-# 2026-09-28: the wofi toast is gone; layout changes now show a notify-send
-# toast instead (no wofi/rofi dependency left in the bar).
+# 2026-09-28: wofi toast dropped, then the notify-send replacement dropped too
+# (user: keyboard = menu only, no notifications).
 PIDFILE="${XDG_RUNTIME_DIR:-/tmp}/waybar-kblayout.pid"
 
 old=$(cat "$PIDFILE" 2>/dev/null || true)
@@ -42,6 +43,5 @@ while true; do
     current=$(get_layout)
     [ "$current" = "$last" ] && continue
     last="$current"
-    echo "$current"
-    notify-send -a layout-menu -t 1000 "Keyboard" "$current"
+    echo "$current"          # waybar re-renders the module; no notification
 done

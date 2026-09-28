@@ -207,14 +207,14 @@ layout_test() {   # layout_test <label> <stub-choice> <expected:layout-index|''>
         grep -q "xkb_switch_layout $expect" /tmp/dd-sw.log 2>/dev/null \
             && ok "$label: switched to layout index $expect" \
             || bad "$label: did not switch (log: $(cat /tmp/dd-sw.log 2>/dev/null))"
-        grep -q "Switched to" /tmp/dd-not.log 2>/dev/null \
-            && ok "$label: toasted the new layout" \
-            || bad "$label: no toast after switching"
+        # User requirement: keyboard = menu only, never a notification.
+        [ -s /tmp/dd-not.log ] && bad "$label: showed a notification (user wants menu only)" \
+            || ok "$label: switched silently (no notification)"
     else
         [ -s /tmp/dd-sw.log ] && bad "$label: switched anyway (log: $(cat /tmp/dd-sw.log))" \
             || ok "$label: no switch for an already-active row"
-        [ -s /tmp/dd-not.log ] && bad "$label: toasted without switching" \
-            || ok "$label: no toast when nothing changed"
+        [ -s /tmp/dd-not.log ] && bad "$label: notified without switching" \
+            || ok "$label: no notification when nothing changed"
     fi
     rm -rf "$MENU_LOCK" /tmp/dd-stub-args-6 /tmp/dd-sw.log /tmp/dd-not.log
 }
@@ -237,6 +237,15 @@ grep -q 'stay-open' /tmp/dd-stub-args-6 \
     && ok "layout menu requested stay-open" \
     || bad "layout menu missing stay-open"
 rm -rf "$MENU_LOCK" /tmp/dd-stub-args-6
+
+# Keyboard = menu only: neither script may ever invoke a notification command
+# (the fake notify-send above would record it, this catches the static call too).
+grep -Eq '^[[:space:]]*notify-send' "$MENUS/kblayout_menu.sh" \
+    && bad "layout menu still calls notify-send" \
+    || ok "layout menu never notifies (menu only)"
+grep -Eq '^[[:space:]]*notify-send' "$MENUS/kblayout.sh" \
+    && bad "layout indicator still calls notify-send" \
+    || ok "layout indicator only updates the bar (no notification)"
 
 # One menu at a time: wifi and power share the lock, so clicking the other button
 # closes the open menu and then opens the one that was clicked -- never both.

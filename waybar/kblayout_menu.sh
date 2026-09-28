@@ -127,5 +127,6 @@ index=$(printf '%s\n' "$layouts" | grep -n -x -F "$target" | head -1 | cut -d: -
 [ -z "$index" ] && index=$(printf '%s\n' "$layouts" | grep -n -F "$target" | head -1 | cut -d: -f1)
 [ -z "$index" ] && exit 0
 
+# Switch silently: no notification/toast for the keyboard (the bar indicator
+# updates on its own) — just the menu.
 swaymsg input type:keyboard xkb_switch_layout "$((index - 1))" >/dev/null
-notify-send -a layout-menu "Keyboard" "Switched to $target"
