@@ -90,7 +90,7 @@ def close_menu(proc):
 def close_leftovers():
     """Menus orphaned by an earlier run of this probe (reparented to init, so
     they are ours, not waybar's) are closed instead of measured twice."""
-    out = subprocess.run(["pgrep", "-f", "sh .*waybar/(wifi|power)_menu.sh"],
+    out = subprocess.run(["pgrep", "-f", "sh .*waybar/(wifi|power|kblayout)_menu.sh"],
                          capture_output=True, text=True)
     closed = 0
     for text in out.stdout.split():
@@ -226,9 +226,6 @@ def check_menu(script, label):
     right_gap, bottom_gap = sw - x1, sh - y1
     print(f"     {label}: changed region {pw}x{ph} at x={x0} y={y0}, {changed} px "
           f"(screen {sw}x{sh}, right gap {right_gap}, bottom gap {bottom_gap})")
-    if y0 < sh // 2:
-        skip(f"{label}: the window is WM-placed in the upper half (no layer shell here)")
-        return
     if pw > MAX_W:
         # Everything on a busy desktop (the bar redrawing full width, another
         # window, a notification) ends up in the same bounding box, so the panel
@@ -236,6 +233,9 @@ def check_menu(script, label):
         # misplacement.
         skip(f"{label}: the changed region spans {pw} px, wider than any panel "
              f"(MAX_W={MAX_W}) - the screen was busy, cannot attribute it to the panel")
+        return
+    if y0 < sh // 2:
+        skip(f"{label}: the window is WM-placed in the upper half (no layer shell here)")
         return
     # The right and bottom edges are what the anchoring is about, and they are
     # also the edges the waybar's own redraw cannot pollute (it changes rows and
@@ -258,6 +258,7 @@ def main():
     print(f"session: Wayland ({os.environ['WAYLAND_DISPLAY']}), shared lock {LOCK}")
     check_menu("wifi_menu.sh", "wifi menu")
     check_menu("power_menu.sh", "power menu")
+    check_menu("kblayout_menu.sh", "layout menu")
     close_leftovers()
     for path in SHOTS:
         try:

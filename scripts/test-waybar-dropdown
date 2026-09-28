@@ -168,6 +168,75 @@ lock_test() {   # lock_test <script> <lock-dir> <has-list-mode: yes|no>
 
 lock_test "$MENUS/power_menu.sh" "$MENU_LOCK" no
 lock_test "$MENUS/wifi_menu.sh"  "$MENU_LOCK" yes
+lock_test "$MENUS/kblayout_menu.sh" "$MENU_LOCK" no
+
+# kblayout_menu.sh must really switch layouts: run it with a stub dropdown (the
+# row it "chooses") and a fake swaymsg that records the switch command.
+FAKEBIN=/tmp/dd-fakebin
+mkdir -p "$FAKEBIN"
+cat > "$FAKEBIN/swaymsg" <<'FAKEEOF'
+#!/bin/sh
+if [ "$1" = "input" ]; then
+    printf '%s\n' "$*" >> "${SWAYMSG_LOG:-/dev/null}"
+    exit 0
+fi
+if [ -n "${SWAY_INPUTS:-}" ]; then
+    printf '%s' "$SWAY_INPUTS"
+else
+    cat <<'JSONEOF'
+[{"type":"keyboard","xkb_layout_names":["English (US)","Arabic","French"],"xkb_active_layout_name":"Arabic"}]
+JSONEOF
+fi
+FAKEEOF
+cat > "$FAKEBIN/notify-send" <<'FAKEEOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "${NOTIF_LOG:-/dev/null}"
+exit 0
+FAKEEOF
+chmod +x "$FAKEBIN/swaymsg" "$FAKEBIN/notify-send"
+
+layout_test() {   # layout_test <label> <stub-choice> <expected:layout-index|''>
+    label=$1; choice=$2; expect=$3
+    rm -rf "$MENU_LOCK" /tmp/dd-stub-args-6
+    rm -f /tmp/dd-sw.log /tmp/dd-not.log
+    SWAYMSG_LOG=/tmp/dd-sw.log NOTIF_LOG=/tmp/dd-not.log \
+        DROPDOWN=$STUB STUB_SLEEP=0 STUB_CHOICE="$choice" STUB_ARGS=/tmp/dd-stub-args-6 \
+        PATH="$FAKEBIN:$PATH" sh "$MENUS/kblayout_menu.sh" >/dev/null 2>&1
+    chk "$label: exit code 0" "$?" 0
+    if [ -n "$expect" ]; then
+        grep -q "xkb_switch_layout $expect" /tmp/dd-sw.log 2>/dev/null \
+            && ok "$label: switched to layout index $expect" \
+            || bad "$label: did not switch (log: $(cat /tmp/dd-sw.log 2>/dev/null))"
+        grep -q "Switched to" /tmp/dd-not.log 2>/dev/null \
+            && ok "$label: toasted the new layout" \
+            || bad "$label: no toast after switching"
+    else
+        [ -s /tmp/dd-sw.log ] && bad "$label: switched anyway (log: $(cat /tmp/dd-sw.log))" \
+            || ok "$label: no switch for an already-active row"
+        [ -s /tmp/dd-not.log ] && bad "$label: toasted without switching" \
+            || ok "$label: no toast when nothing changed"
+    fi
+    rm -rf "$MENU_LOCK" /tmp/dd-stub-args-6 /tmp/dd-sw.log /tmp/dd-not.log
+}
+
+printf '\n== layout menu switching (fake swaymsg) ==\n'
+layout_test "pick French"    "   French"            "2"
+layout_test "pick English"   "   English (US)"      "0"
+layout_test "pick the active row" "*  Arabic (active)" ""
+# The picker panel itself: anchored above the bar under the layout button
+rm -rf "$MENU_LOCK" /tmp/dd-stub-args-6
+DROPDOWN=$STUB STUB_SLEEP=0 STUB_ARGS=/tmp/dd-stub-args-6 \
+    PATH="$FAKEBIN:$PATH" sh "$MENUS/kblayout_menu.sh" >/dev/null 2>&1
+grep -q -- '--anchor-x 1446' /tmp/dd-stub-args-6 \
+    && ok "layout menu anchored at the layout button (x=1446)" \
+    || bad "layout menu not anchored at the layout button"
+grep -q -- '--anchor-edge bottom' /tmp/dd-stub-args-6 \
+    && ok "layout menu anchored above the bar (bottom edge)" \
+    || bad "layout menu not anchored above the bar"
+grep -q 'stay-open' /tmp/dd-stub-args-6 \
+    && ok "layout menu requested stay-open" \
+    || bad "layout menu missing stay-open"
+rm -rf "$MENU_LOCK" /tmp/dd-stub-args-6
 
 # One menu at a time: wifi and power share the lock, so clicking the other button
 # closes the open menu and then opens the one that was clicked -- never both.
@@ -217,9 +286,11 @@ cross_test() {   # cross_test <open-script> <other-script> <other-kind> <label>
     rm -rf "$MENU_LOCK" /tmp/dd-stub-args-1 /tmp/dd-stub-args-4 /tmp/dd-stub-args-5
 }
 
-printf '\n== one menu at a time (wifi vs power) ==\n'
+printf '\n== one menu at a time (wifi vs power vs layout) ==\n'
 cross_test "$MENUS/wifi_menu.sh"  "$MENUS/power_menu.sh" power "power click while wifi open"
 cross_test "$MENUS/power_menu.sh" "$MENUS/wifi_menu.sh"  wifi  "wifi click while power open"
+cross_test "$MENUS/wifi_menu.sh"  "$MENUS/kblayout_menu.sh" kblayout "layout click while wifi open"
+cross_test "$MENUS/kblayout_menu.sh" "$MENUS/wifi_menu.sh" wifi "wifi click while layout open"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

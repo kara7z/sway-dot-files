@@ -197,7 +197,7 @@
     "custom/kblayout": {
         "format": "{}",
         "exec": "~/.config/waybar/kblayout.sh",
-        "on-click": "swaymsg input type:keyboard xkb_switch_layout next",
+        "on-click": "~/.config/waybar/kblayout_menu.sh",
         "tooltip": false
     },
     "custom/notification": {

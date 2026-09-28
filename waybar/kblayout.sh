@@ -1,6 +1,6 @@
 #!/bin/sh
 # waybar custom/kblayout — prints the active layout (US/AR/FR) for the bar and
-# pops a short wofi toast whenever the layout changes.
+# pops a short notify-send toast whenever the layout changes.
 #
 # 2026-09-24 fixes:
 #   * jq instead of python3 per poll: 31ms -> 3.8ms (the old version burned ~30%
@@ -10,7 +10,9 @@
 #     wrapper, so the old script was orphaned and kept running — every waybar
 #     restart added another popup-spamming copy. The new copy now kills the
 #     previous one (verified via /proc/<pid>/cmdline) before taking over.
-WOFI_STYLE="${XDG_CONFIG_HOME:-$HOME/.config}/wofi/power.css"
+#
+# 2026-09-28: the wofi toast is gone; layout changes now show a notify-send
+# toast instead (no wofi/rofi dependency left in the bar).
 PIDFILE="${XDG_RUNTIME_DIR:-/tmp}/waybar-kblayout.pid"
 
 old=$(cat "$PIDFILE" 2>/dev/null || true)
@@ -33,7 +35,6 @@ get_layout() {
         }
 }
 
-popup=""
 last=$(get_layout)
 echo "$last"
 while true; do
@@ -42,9 +43,5 @@ while true; do
     [ "$current" = "$last" ] && continue
     last="$current"
     echo "$current"
-    kill "$popup" 2>/dev/null
-    echo "$current" | wofi --dmenu --width 200 --height 50 --location center \
-        --hide-search --conf /dev/null --style "$WOFI_STYLE" >/dev/null 2>&1 &
-    popup=$!
-    ( sleep 1 && kill "$popup" 2>/dev/null ) &
+    notify-send -a layout-menu -t 1000 "Keyboard" "$current"
 done
