@@ -138,12 +138,13 @@ lock_test() {   # lock_test <script> <lock-dir> <has-list-mode: yes|no>
     fi
 
     # While it is open: the Refresh row's list mode must bypass the lock, and the
-    # panel must be asked for the bottom-right corner with the extra rows.
+    # wifi panel must be asked for the bottom edge with the extra rows.
     if [ "$haslist" = yes ]; then
         nets=$(sh "$script" --list no 2>/dev/null | grep -c .)
         if [ "$nets" -gt 0 ]; then ok "list mode works while locked ($nets networks)"; else bad "list mode blocked by the lock"; fi
-        grep -q 'anchor-edge bottom' /tmp/dd-stub-args-1 && ok "menu anchored bottom-right" || bad "menu not anchored bottom-right"
+        grep -q -- '--anchor-edge bottom' /tmp/dd-stub-args-1 && ok "menu anchored above the bar (bottom edge)" || bad "menu not anchored above the bar"
         grep -q 'stay-open' /tmp/dd-stub-args-1 && ok "menu requested stay-open" || bad "menu missing stay-open"
+        grep -q -- '--anchor-x 1608' /tmp/dd-stub-args-1 && ok "menu anchored at the wifi button (x=1608)" || bad "menu not anchored at the wifi button"
         grep -q 'refresh-cmd' /tmp/dd-stub-args-1 && ok "menu offers a refresh row" || bad "menu missing refresh row"
     fi
 

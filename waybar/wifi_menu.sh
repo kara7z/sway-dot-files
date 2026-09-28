@@ -1,7 +1,7 @@
 #!/bin/sh
 # Portable — uses $HOME (no hardcoded user path)
 # Anchored dropdown (no rofi/wofi): waybar-dropdown drops above the bar,
-# centered under the clicked Wi-Fi module.
+# centered under the Wi-Fi button (--anchor-x is pixel-measured, see below).
 #
 # One menu at a time: the Wi-Fi and the power menu share a single lock. Clicking
 # the same button again closes the menu (toggle); clicking the other button closes
@@ -15,6 +15,12 @@
 # `wifi_menu.sh --list [yes|no]` prints the network list and exits; that is what
 # the dropdown runs for its Refresh row.
 MENU_KIND=wifi                                # what a second click compares against
+# The Wi-Fi button lives in the right-hand block at roughly x=1528..1688, center
+# x=1608 on a 1920 px output (pixel-measured with grim; the bar itself is right-
+# aligned, so this does not move when the SSID text changes). The panel opens
+# centered under the button, clamped to the monitor by waybar-dropdown.
+WIFI_ANCHOR_X=1608
+WIFI_ANCHOR_WIDTH=300                         # same for every submenu/prompt
 DROPDOWN="${DROPDOWN:-$HOME/.local/bin/waybar-dropdown}"
 # Directory lock, shared with power_menu.sh: mkdir is atomic, so two clicks in
 # the same millisecond -- or a Wi-Fi click and a power click -- can never both
@@ -38,13 +44,13 @@ run_dropdown() {                              # arguments pass straight through
 
 # Small action menu helper: ask <prompt> <lines>  (items on stdin)
 ask() {
-    run_dropdown --anchor-cursor --anchor-edge bottom \
-        --width 300 --prompt "$1" --max-lines "$2" --stay-open --refocus
+    run_dropdown --anchor-x "$WIFI_ANCHOR_X" --anchor-edge bottom \
+        --width "$WIFI_ANCHOR_WIDTH" --prompt "$1" --max-lines "$2" --stay-open --refocus
 }
 
 # Masked password prompt (dropdown entry)
 ask_password() {
-    run_dropdown --anchor-cursor --anchor-edge bottom \
+    run_dropdown --anchor-x "$WIFI_ANCHOR_X" --anchor-edge bottom \
         --password --prompt "Password for $1" --stay-open --refocus
 }
 
@@ -146,7 +152,7 @@ lines=$count
 
 # --refresh-cmd re-runs this script in --list mode: the Refresh row re-scans
 # and repopulates the panel in place, no close/reopen flash.
-chosen=$(printf '%s\n' "$list" | run_dropdown --anchor-cursor \
+chosen=$(printf '%s\n' "$list" | run_dropdown --anchor-x "$WIFI_ANCHOR_X" \
     --width "$width" --prompt "WiFi" --max-lines "$lines" \
     --anchor-edge bottom --refresh-cmd "$0 --list yes" --cancel \
     --stay-open --refocus)
