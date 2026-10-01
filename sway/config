@@ -349,8 +349,10 @@ bindsym $mod+r mode "resize"
     bindsym --locked XF86Fn_F6 exec nwg-displays
     bindsym --locked XF86Fn_F8 exec nwg-displays
 
-    # Special key to take a screenshot with grim
-    bindsym Print exec grim
+    # Special key to take a screenshot with grim. A bare `grim` with no output
+    # file saves NOTHING (verified: exit 0, no file written, no stdout), so the
+    # destination is required. Saves a timestamped PNG in ~/Pictures/Screenshots.
+    bindsym Print exec bash -c 'mkdir -p "$HOME/Pictures/Screenshots" && grim "$HOME/Pictures/Screenshots/screenshot-$(date +%Y%m%d-%H%M%S).png"'
 
 #
 # Status Bar:
@@ -391,8 +393,14 @@ shadows_on_csd disable
 
 # Global dark mode — GTK / libadwaita / Qt / Electron / Firefox (portal follows color-scheme)
 exec_always gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark' && gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark' && gsettings set org.gnome.desktop.interface icon-theme 'Adwaita' && gsettings set org.gnome.desktop.interface cursor-theme 'Bibata-Modern-Ice'
-exec systemctl --user set-environment GTK_THEME=Adwaita:dark QT_QPA_PLATFORMTHEME=qt6ct QT_STYLE_OVERRIDE=adwaita-dark XCURSOR_THEME=Bibata-Modern-Ice XCURSOR_SIZE=24 ELECTRON_OZONE_PLATFORM_HINT=auto MOZ_ENABLE_WAYLAND=1 GDK_BACKEND=wayland,x11 QT_QPA_PLATFORM=wayland;xcb SDL_VIDEODRIVER=wayland,x11 XDG_SESSION_TYPE=wayland _JAVA_AWT_WM_NONREPARENTING=1
-exec dbus-update-activation-environment --systemd GTK_THEME=Adwaita:dark QT_QPA_PLATFORMTHEME=qt6ct QT_STYLE_OVERRIDE=adwaita-dark XCURSOR_THEME=Bibata-Modern-Ice XCURSOR_SIZE=24 ELECTRON_OZONE_PLATFORM_HINT=auto MOZ_ENABLE_WAYLAND=1 GDK_BACKEND=wayland,x11 QT_QPA_PLATFORM=wayland;xcb SDL_VIDEODRIVER=wayland,x11 XDG_SESSION_TYPE=wayland _JAVA_AWT_WM_NONREPARENTING=1
+# NOTE: values containing ',' or ';' MUST be quoted. sway's parser treats BOTH
+# as command separators, so an unquoted `GDK_BACKEND=wayland,x11` silently
+# truncated this line at the comma: the ,x11 fallback and every assignment
+# after it (QT_QPA_PLATFORM/SDL_VIDEODRIVER/XDG_SESSION_TYPE/...) were dropped
+# and sway logged "Unknown/invalid command". Only the values above the comma
+# were applied. environment.d masked the rest.
+exec systemctl --user set-environment GTK_THEME=Adwaita:dark QT_QPA_PLATFORMTHEME=qt6ct QT_STYLE_OVERRIDE=adwaita-dark XCURSOR_THEME=Bibata-Modern-Ice XCURSOR_SIZE=24 ELECTRON_OZONE_PLATFORM_HINT=auto MOZ_ENABLE_WAYLAND=1 "GDK_BACKEND=wayland,x11" "QT_QPA_PLATFORM=wayland;xcb" "SDL_VIDEODRIVER=wayland,x11" XDG_SESSION_TYPE=wayland _JAVA_AWT_WM_NONREPARENTING=1
+exec dbus-update-activation-environment --systemd GTK_THEME=Adwaita:dark QT_QPA_PLATFORMTHEME=qt6ct QT_STYLE_OVERRIDE=adwaita-dark XCURSOR_THEME=Bibata-Modern-Ice XCURSOR_SIZE=24 ELECTRON_OZONE_PLATFORM_HINT=auto MOZ_ENABLE_WAYLAND=1 "GDK_BACKEND=wayland,x11" "QT_QPA_PLATFORM=wayland;xcb" "SDL_VIDEODRIVER=wayland,x11" XDG_SESSION_TYPE=wayland _JAVA_AWT_WM_NONREPARENTING=1
 
 # 10-bit color: 10bpc render + wire (sets DRM max bpc 8 -> 10 on i915)
 # Note: eDP-1 EDID reports 8bpc, so this enables 10-bit pipeline (smoother
