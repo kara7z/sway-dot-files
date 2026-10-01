@@ -68,8 +68,8 @@
 | `sway-game-unstick` | unfreezes a frozen fullscreen game view by toggling fullscreen off/on on the focused window (`Super+G`, `sway/config:199`); only touches the focused container, never touches the game process; `--dry-run` |
 | `sway-game-freeze-daemon` | auto-watchdog daemon that detects stalled frame presentation in fullscreen games during gameplay and unfreezes them automatically in background; autostarted from `sway/config:98` |
 | `sway/scripts/workspace-fade.sh` | fake fade `dpms off / workspace N / dpms on` |
-| `sway/status.sh` | legacy swaybar JSON (wifi `nmcli`, vol `pactl`, bat `/sys/.../BAT0`) — **inactive**, uses waybar now |
-| `sway/wifi-menu.sh` | `nmcli rescan | wofi` — legacy, replaced by `waybar/wifi_menu.sh` |
+| `sway/status.sh` | legacy swaybar JSON (wifi `nmcli`, vol `pactl`, bat `/sys/.../BAT0`) — **inactive**, uses waybar now; its wifi click opens the sibling `sway/wifi-menu.sh` |
+| `sway/wifi-menu.sh` | `nmcli rescan | wofi` — legacy, replaced by `waybar/wifi_menu.sh`; prompts for the password on secured networks |
 
 ## Waybar Modules & Their Apps `waybar/config:9`
 

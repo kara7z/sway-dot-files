@@ -358,6 +358,13 @@ bindsym $mod+r mode "resize"
 # Read `man 5 sway-bar` for more information about this section.
 exec waybar
 exec swaync
+# NetworkManager needs a registered SecretAgent to prompt for Wi-Fi/VPN
+# passwords. A bare sway session has none, so NM fails with
+# "no secrets: No agents were available for this request." nm-applet provides
+# that agent (it shows a tray icon); polkit-kde-agent handles privileged auth
+# prompts. Both are installed via deps/pacman.txt.
+exec --no-startup-id nm-applet
+exec --no-startup-id /usr/lib/polkit-kde-authentication-agent-1
 exec way-displays > /tmp/way-displays.${XDG_VTNR}.${USER}.log 2>&1
 # Permanent duplicate: re-mirror laptop onto external on login (hotplug is
 # covered by way-displays CALLBACK_CMD). Clears any manual-off from last session.

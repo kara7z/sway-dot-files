@@ -176,6 +176,9 @@ if [ "$ssid" = "$current" ]; then
     exit 0
 fi
 
+# Raw AP list (active:SSID:signal:security). Needed to read the SSID's security
+# below; without it every network looks open and no password is ever requested.
+wifi=$(nmcli -t -f active,ssid,signal,security dev wifi 2>/dev/null)
 security=$(printf '%s\n' "$wifi" | grep -F ":${ssid}:" | head -1 | awk -F: '{print $NF}' | xargs)
 saved=$(nmcli -t -f name connection show 2>/dev/null | grep -Fx "$ssid")
 

@@ -36,6 +36,8 @@ bluez
 bluez-utils
 networkmanager
 network-manager-applet
+polkit
+polkit-kde-agent
 power-profiles-daemon
 polkit
 xdg-desktop-portal-wlr

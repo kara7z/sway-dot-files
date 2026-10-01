@@ -74,7 +74,7 @@ while true; do
 
   case "$event" in
     *\"name\":\"wifi\"*)
-      networkmanager_dmenu &
+      "${XDG_CONFIG_HOME:-$HOME/.config}/sway/wifi-menu.sh" &
       ;;
   esac
 done
