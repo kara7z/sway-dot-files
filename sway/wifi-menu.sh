@@ -20,7 +20,7 @@ choice=$(printf '%s\n' "$wifi" |
 
 ssid="${choice% (*}"
 
-security=$(printf '%s\n' "$wifi" | grep -F ":${ssid}:" | head -1 | awk -F: '{print $NF}' | xargs)
+security=$(printf '%s\n' "$wifi" | awk -F: -v s="$ssid" '$1 == s {print $3; exit}')
 saved=$(nmcli -t -f name connection show 2>/dev/null | grep -Fx "$ssid")
 
 connected() { notify-send -a wifi-menu "Wi-Fi" "Connected to $ssid"; exit 0; }
