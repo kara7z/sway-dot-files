@@ -30,6 +30,10 @@ seat seat0 xcursor_theme Bibata-Modern-Ice 24
 titlebar_border_thickness 1
 titlebar_padding 4 2
 
+# gaps
+workspace 5 gaps horizontal 150
+workspace 5 gaps vertical 50
+workspace 5 gaps inner 10
 ### SwayFX eye-candy
 animation_duration_ms 250
 corner_radius 0
@@ -68,34 +72,39 @@ client.urgent      #ff0000     #ff0000     #ffffff      #ff0000      #ff0000
 # Tune the timeouts inside ~/.local/bin/sway-idle-lock.
 exec_always ~/.local/bin/sway-idle-lock
 
-### Idle lock vs. gamepads
+# Keep Nautilus warm so Mod+Super+E opens its first window without the cold
+# application and Tracker startup delay. Its D-Bus service opens windows on demand.
+exec nautilus --gapplication-service
+
+### Idle lock vs. gamepads — fullscreen only
 # Games read the controller straight from /dev/input, so sway sees no
 # keyboard/pointer activity while you play: swayidle used to lock the session
 # after 5 min and blank the screen after 10 min mid-game (reproduced
 # 2026-09-25 — a 3 s test timeout fired while the focused XWayland Proton
-# window `steam_app_387290` was playing). A view that holds sway's native idle
-# inhibitor pauses *both* timers while it has focus; the session locks again
-# 5 min after the game loses focus / is closed, `before-sleep` is untouched.
-# Swap `focus` for `fullscreen`/`visible`/`open`/`none` per rule (man 5 sway).
-for_window [class="^steam_app_"]    inhibit_idle focus   # Steam + Proton games (XWayland)
-for_window [app_id="^steam_app_"]   inhibit_idle focus   # Steam games (native Wayland)
-for_window [class="^steam$"]        inhibit_idle focus   # Steam client / Big Picture
-for_window [class="[.]exe$"]        inhibit_idle focus   # Wine/Proton exe windows
-for_window [class="^gamescope"]     inhibit_idle focus
-for_window [app_id="^gamescope"]    inhibit_idle focus
-for_window [class="^[Mm]inecraft"]  inhibit_idle focus   # Minecraft (XWayland)
-for_window [app_id="^[Mm]inecraft"] inhibit_idle focus
-for_window [class="^[Ll]utris"]     inhibit_idle focus
-for_window [class="^[Hh]eroic"]     inhibit_idle focus
+# window `steam_app_387290` was playing). A view with `inhibit_idle fullscreen`
+# pauses *both* timers only while that view is fullscreen and visible; windowed
+# games / desktop still lock after 5 min, `before-sleep` is untouched.
+# (man 5 sway: focus=on focus, fullscreen=only when fullscreen+visible).
+for_window [class="^steam_app_"]    inhibit_idle fullscreen   # Steam + Proton games (XWayland)
+for_window [app_id="^steam_app_"]   inhibit_idle fullscreen   # Steam games (native Wayland)
+for_window [class="^steam$"]        inhibit_idle fullscreen   # Steam client / Big Picture
+for_window [class="[.]exe$"]        inhibit_idle fullscreen   # Wine/Proton exe windows
+for_window [class="^gamescope"]     inhibit_idle fullscreen
+for_window [app_id="^gamescope"]    inhibit_idle fullscreen
+for_window [class="^[Mm]inecraft"]  inhibit_idle fullscreen   # Minecraft (XWayland)
+for_window [app_id="^[Mm]inecraft"] inhibit_idle fullscreen
+for_window [class="^[Ll]utris"]     inhibit_idle fullscreen
+for_window [class="^[Hh]eroic"]     inhibit_idle fullscreen
+# Any fullscreen window (game, video, browser F11): only while fullscreen+visible.
+for_window [all] inhibit_idle fullscreen
+# for_window only hits new windows: re-apply to existing views on each reload
+# (old terminals kept user=none and still locked fullscreen — seen 2026-09-28).
+exec_always --no-startup-id swaymsg '[all] inhibit_idle fullscreen' >/dev/null 2>&1
 
 # Same guard driven by real gamepad input — covers games whose class/app_id is
-# not listed above (reads the pads itself, holds/clears `inhibit_idle focus`
+# not listed above (reads the pads itself, holds/clears `inhibit_idle fullscreen`
 # around play, releases after 300 s of pad silence; see --status / --dry-run).
 exec_always --no-startup-id ~/.local/bin/sway-gamepad-idle-guard
-
-# Auto-unstick daemon: monitors fullscreen games in the background and unfreezes
-# stalled render pipelines automatically if the display freezes while playing!
-exec_always --no-startup-id ~/.local/bin/sway-game-freeze-daemon
 
 ### Fullscreen games: keep frames flowing (SwayFX + XWayland/Proton)
 # Symptom 2026-09-25: a fullscreen game view can stop updating (frozen picture,
@@ -146,7 +155,7 @@ exec_always bash -c 'pkill awww-daemon; sleep 0.2; awww-daemon'
 exec_always --no-startup-id bash -c 'sleep 2; pkill -x swaybg 2>/dev/null; true'
 # Discord: start at session login. The pgrep guard means a config reload
 # (Alt+Shift+C) no longer launches a second instance / re-opens the window.
-exec_always --no-startup-id bash -c 'pgrep -ix discord >/dev/null || discord &'
+exec --no-startup-id bash -c 'pgrep -ix discord >/dev/null || discord &'
 exec --no-startup-id $Bluetooth
 # Battery warnings: 15% low, 5% critical (notify via swaync)
 exec ~/.local/bin/sway-battery-notify
