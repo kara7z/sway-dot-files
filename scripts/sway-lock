@@ -34,7 +34,8 @@ resolve_wallpaper() {
   fi
   # 2. whatever awww is showing right now
   local img
-  img=$(awww query 2>/dev/null | grep -oE 'image: [^ ,]+' | head -1 | cut -d' ' -f2)
+  img=$(awww query --json 2>/dev/null | jq -r \
+    '[.[][] | .displaying.image? | select(type == "string")][0] // empty')
   if [ -n "$img" ] && [ -f "$img" ]; then
     printf '%s' "$img"
     return 0

@@ -74,10 +74,27 @@ echo "$MENU_KIND" > "$LOCK/kind"             # which menu owns it (diagnostics)
 # Take the panel down with us (Esc, Cancel, a crash, or sway going away)
 trap 'panel=$(cat "$LOCK/panel" 2>/dev/null); [ -n "$panel" ] && kill -TERM "$panel" 2>/dev/null; rm -f "$LOCK/pid" "$LOCK/kind" "$LOCK/panel"; rmdir "$LOCK" 2>/dev/null' EXIT INT TERM
 
-# Hibernate needs a persistent swap device (not zram) for the image
+# Check hibernate support using shell built-ins so menu startup does not wait
+# for extra grep/awk processes.
 hibernate=""
-if grep -qw disk "$POWER_STATE_FILE" 2>/dev/null &&
-   awk 'NR > 1 && $1 !~ /^\/dev\/zram/ { found = 1 } END { exit !found }' "$SWAPS_FILE" 2>/dev/null; then
+has_disk_state=no
+if [ -r "$POWER_STATE_FILE" ]; then
+    IFS= read -r power_states < "$POWER_STATE_FILE"
+    case " $power_states " in
+        *" disk "*) has_disk_state=yes ;;
+    esac
+fi
+has_persistent_swap=no
+if [ -r "$SWAPS_FILE" ]; then
+    while read -r swap_name _swap_type _swap_size _swap_used _swap_priority; do
+        case "$swap_name" in
+            ''|Filename) ;;
+            /dev/zram*) ;;
+            *) has_persistent_swap=yes; break ;;
+        esac
+    done < "$SWAPS_FILE"
+fi
+if [ "$has_disk_state" = yes ] && [ "$has_persistent_swap" = yes ]; then
     hibernate="󰐥 Hibernate\n"
 fi
 
@@ -87,7 +104,7 @@ menu="󰌾 Lock\n󰒼 Suspend\n${hibernate}󰌋 Logout\n󰋜 Reboot\n󰆑 Shutdo
 # Cancel row; --refocus re-claims the keyboard after a focus loss so that
 # Escape always reaches the menu.
 chosen=$(printf '%b' "$menu" | run_dropdown --anchor-cursor --anchor-align right \
-    --anchor-edge bottom --stay-open --refocus --cancel)
+    --anchor-edge top --margin-top 5 --stay-open --refocus --cancel)
 
 fail() {
     notify-send -a power-menu -u critical "Power menu" "$1"

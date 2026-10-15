@@ -1,6 +1,6 @@
 #!/bin/sh
 # Portable — uses $HOME (no hardcoded user path)
-# Anchored dropdown (no rofi/wofi): waybar-dropdown drops above the bar,
+# Anchored dropdown (no rofi/wofi): waybar-dropdown opens below the top bar,
 # centered under the Wi-Fi button (--anchor-x is pixel-measured, see below).
 #
 # One menu at a time: the Wi-Fi and the power menu share a single lock. Clicking
@@ -12,8 +12,8 @@
 # The last two rows are "⟳ Refresh" (re-scans and repopulates the list in
 # place, without closing the menu) and "✕ Cancel".
 #
-# `wifi_menu.sh --list [yes|no]` prints the network list and exits; that is what
-# the dropdown runs for its Refresh row.
+# `wifi_menu.sh --list [yes|no|live]` prints the network list and exits.
+# Live mode waits for the scan request to be accepted, then reads cached results.
 MENU_KIND=wifi                                # what a second click compares against
 # The Wi-Fi button lives in the right-hand block at roughly x=1528..1688, center
 # x=1608 on a 1920 px output (pixel-measured with grim; the bar itself is right-
@@ -44,22 +44,22 @@ run_dropdown() {                              # arguments pass straight through
 
 # Small action menu helper: ask <prompt> <lines>  (items on stdin)
 ask() {
-    run_dropdown --anchor-x "$WIFI_ANCHOR_X" --anchor-edge bottom \
+    run_dropdown --anchor-x "$WIFI_ANCHOR_X" --anchor-edge top --margin-top 5 \
         --width "$WIFI_ANCHOR_WIDTH" --prompt "$1" --max-lines "$2" --stay-open --refocus
 }
 
 # Masked password prompt (dropdown entry)
 ask_password() {
-    run_dropdown --anchor-x "$WIFI_ANCHOR_X" --anchor-edge bottom \
+    run_dropdown --anchor-x "$WIFI_ANCHOR_X" --anchor-edge top --margin-top 5 \
         --password --prompt "Password for $1" --stay-open --refocus
 }
 
 # --- the network list --------------------------------------------------------
 # build_list <rescan: no|yes> — prints "✓ 󰤨  84%  SSID" lines, the active
-# network first and then by signal. Used at startup (cached, ~7 ms) and by the
-# dropdown's Refresh row (real scan, ~2 s, run off the UI thread there).
+# network first and then by signal. Runs in the dropdown's background worker.
 build_list() {
-    nmcli -t -f active,ssid,signal,security dev wifi list --rescan "$1" 2>/dev/null \
+    networks=$(nmcli -t -f active,ssid,signal,security dev wifi list --rescan "$1" 2>/dev/null) || return $?
+    printf '%s\n' "$networks" \
       | grep -v '^[[:space:]]*$' \
       | sort -t: -k1,1r -k3,3rn \
       | awk -F: '!seen[$2]++ && $2 != ""' \
@@ -86,8 +86,17 @@ build_list() {
 # calls it as a child of this very script while the lock is held, so taking the
 # lock here would make Refresh print nothing and the list would never update.
 if [ "$1" = "--list" ]; then
-    build_list "${2:-yes}"
-    exit 0
+    if [ "${2:-yes}" = live ]; then
+        # Wait for NetworkManager to accept the request. With --wait 0, nmcli
+        # can exit before the asynchronous request is delivered. The radio scan
+        # finishes in the background; subsequent polls pick up all its results.
+        # NetworkManager may throttle requests; still read its latest results.
+        timeout 4 nmcli --wait 3 dev wifi rescan >/dev/null 2>&1 || :
+        build_list no
+    else
+        build_list "${2:-yes}"
+    fi
+    exit $?
 fi
 
 # --- one menu at a time: same button toggles, the other button switches --------
@@ -126,38 +135,20 @@ echo "$MENU_KIND" > "$LOCK/kind"             # which menu owns it (diagnostics)
 # Take the panel down with us (Esc, Cancel, a crash, or sway going away)
 trap 'panel=$(cat "$LOCK/panel" 2>/dev/null); [ -n "$panel" ] && kill -TERM "$panel" 2>/dev/null; rm -f "$LOCK/pid" "$LOCK/kind" "$LOCK/panel"; rmdir "$LOCK" 2>/dev/null' EXIT INT TERM
 
-# Cached AP list first (~7 ms): 'nmcli ... --rescan yes' would block the menu
-# for ~3 s and briefly disturbs the radio, which shows up as ping spikes.
-list=$(build_list no)
-# Cold boot / stale cache (fewer than 2 networks, or a single cached AP is
-# almost always a leftover): pay for one real scan so the menu is never empty.
-count=$(printf '%s\n' "$list" | grep -c .)
-if [ "$count" -le 1 ]; then
-    list=$(build_list yes)
-    count=$(printf '%s\n' "$list" | grep -c .)
-fi
-
-iface=$(nmcli -t -f DEVICE,TYPE device status 2>/dev/null | grep ':wifi$' | cut -d: -f1)
-[ -z "$iface" ] && exit 0
-[ "$count" -eq 0 ] && exit 0
-
-current=$(nmcli -t -f active,ssid dev wifi 2>/dev/null | grep '^yes:' | cut -d: -f2)
-
-maxlen=$(printf '%s\n' "$list" | awk '{ print length }' | sort -rn | head -1)
-width=$((maxlen * 10 + 40))
-[ "$width" -gt 640 ] && width=640   # long SSIDs must not push the menu off-screen
-lines=$count
-[ "$lines" -gt 12 ] && lines=12     # cap the list height, scroll the rest
-                                     # (Refresh + Cancel are always visible)
-
-# --refresh-cmd re-runs this script in --list mode: the Refresh row re-scans
-# and repopulates the panel in place, no close/reopen flash.
-chosen=$(printf '%s\n' "$list" | run_dropdown --anchor-x "$WIFI_ANCHOR_X" \
-    --width "$width" --prompt "WiFi" --max-lines "$lines" \
-    --anchor-edge bottom --refresh-cmd "$0 --list yes" --cancel \
-    --stay-open --refocus)
+# Paint immediately, even with no cached networks. All network queries happen
+# after opening, in a worker; poll every second while the list is open.
+# Automatic width and a 12-row cap let the panel grow and shrink with results.
+chosen=$(run_dropdown --anchor-x "$WIFI_ANCHOR_X" \
+    --prompt "WiFi" --max-lines 12 \
+    --anchor-edge top --margin-top 5 --refresh-cmd "\"$0\" --list live" --cancel \
+    --refresh-interval 1 --empty-label "No networks found" \
+    --stay-open --refocus </dev/null)
 
 [ -z "$chosen" ] && exit 0
+
+iface=$(nmcli -t -f DEVICE,TYPE device status 2>/dev/null | grep ':wifi$' | cut -d: -f1 | head -1)
+[ -z "$iface" ] && exit 0
+current=$(nmcli -t -f active,ssid dev wifi list --rescan no 2>/dev/null | grep '^yes:' | cut -d: -f2)
 
 # Rows look like "✓ 󰤨  84%  MySSID" — the SSID starts after the first run of
 # spaces that follows the signal percentage (an SSID may itself contain '%').

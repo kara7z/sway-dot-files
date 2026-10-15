@@ -1,0 +1,60 @@
+# $schema: https://raw.githubusercontent.com/alex-courtis/way-displays/refs/heads/master/schema/cfg-2.0.0.yaml
+# man 5 way-displays
+# Tailored 2026-09-20 for Dell Meteor Lake (Intel i915) + eDP-1 1920x1200 + Samsung 4K via DP.
+
+## Arrange displays in a ROW (left to right), aligned at TOP
+ARRANGE: ROW
+ALIGN: TOP
+
+## Order: laptop first, then any external (DP-1..4 on this machine, HDMI elsewhere).
+## Regex (prefixed with !) preferred over fuzzy names; '!^DP-1$' exact-matches DP-1 only.
+ORDER:
+  - '!^eDP-1$'
+  - '!^DP-'
+  - '!^HDMI-'
+
+## Scaling: keep explicit scale 1 everywhere (AUTO_SCALE off would downscale the 4K TV otherwise).
+SCALING: TRUE
+SCALE_ROUND_TO: 0.125
+SCALE_ROUND_STRATEGY: NEAREST
+AUTO_SCALE: FALSE
+AUTO_SCALE_DPI: 96
+AUTO_SCALE_MIN: 1
+AUTO_SCALE_MAX: -1
+
+SCALE:
+  '!^eDP-1$': 1
+
+## Laptop native; Samsung uses its advertised 1080p60 mode for smooth mirroring.
+## 1920x1200 is absent from its mode list and fell back to 4K30 in the logs.
+## wl-mirror's fit scaling preserves the laptop's full 16:10 image.
+MODE:
+  '!^eDP-1$':
+    WIDTH: 1920
+    HEIGHT: 1200
+    HZ: 60
+  'SAMSUNG':
+    WIDTH: 1920
+    HEIGHT: 1080
+    HZ: 60
+
+TRANSFORM:
+
+## eDP-1 reports adaptive_sync: false, so don't attempt VRR on it.
+VRR_OFF:
+  - '!^eDP-1$'
+  - 'SAMSUNG'
+
+CALLBACK_CMD: |
+  "$HOME/.local/bin/sway-wallpaper-sync" >> /tmp/sway-wallpaper-sync.log 2>&1
+  "$HOME/.local/bin/sway-display-mirror-ensure" >> /tmp/wl-mirror-ensure.log 2>&1 &
+  notify-send "way-displays ${CALLBACK_LEVEL}" "${CALLBACK_MSG}"
+
+LAPTOP_LID_MONITOR: TRUE
+LOG_THRESHOLD: INFO
+
+DISABLED:
+  # laptop display off when lid closed
+  "!^eDP-[0-9]":
+    IF:
+      - LID: CLOSED

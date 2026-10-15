@@ -15,11 +15,8 @@
 #   fullscreen wl-mirror window on the target output) — a window that silently
 #   falls back to the laptop screen is rejected.
 #
-#   A true hardware clone (both outputs at 0,0, same mode) is attempted only
-#   when the external really advertises the laptop's native mode; the Samsung
-#   4K TV (DP-2) has no 1920x1200, so this box always uses wl-mirror.
-#   way-displays owns the extended layout: it is stopped for a hardware clone
-#   (the daemon cannot overlap outputs) and always restarted afterwards.
+#   Mirroring uses wl-mirror. Overlapping output positions do not clone
+#   tiled workspaces in Sway. way-displays owns the extended layout.
 #
 #   16:9 externals get the no-bars treatment: the external is switched to
 #   1920x1080@60 and mirrored with --scaling cover, so the picture fills it
@@ -71,26 +68,11 @@ notify() {  # notify "title" "body"
 
 # name, active, x, y, w, h, current_w, current_h, current_hz  (tab separated)
 outputs() {
-  swaymsg -t get_outputs 2>/dev/null | python3 -c '
-import json, sys
-for o in json.load(sys.stdin):
-    m = o.get("current_mode") or {}
-    r = o.get("rect") or {}
-    print("\t".join(str(v) for v in (
-        o["name"], 1 if o.get("active") else 0,
-        r.get("x", 0), r.get("y", 0), r.get("width", 0), r.get("height", 0),
-        m.get("width", 0), m.get("height", 0), round((m.get("refresh") or 0) / 1000))))
-'
+  swaymsg -t get_outputs 2>/dev/null | "$HOME/.local/bin/sway-helper-json" outputs-tsv
 }
 
 ext_has_mode() {  # ext_has_mode NAME W H -> yes/no
-  swaymsg -t get_outputs 2>/dev/null | python3 -c '
-import json, sys
-name, w, h = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
-out = [o for o in json.load(sys.stdin) if o["name"] == name]
-modes = (out[0].get("modes") or []) if out else []
-print("yes" if any(m["width"] == w and m["height"] == h for m in modes) else "no")
-' "$1" "$2" "$3"
+  swaymsg -t get_outputs 2>/dev/null | "$HOME/.local/bin/sway-helper-json" has-mode "$1" "$2" "$3"
 }
 
 main_rect() { outputs | awk -F'\t' -v m="$MAIN" '$1==m {print $3, $4, $7, $8, $9}' ; }
@@ -153,21 +135,7 @@ fill16x9_mirror() {
 # yes only when a wl-mirror window is really fullscreen on the target output.
 mirror_ok() {  # mirror_ok PID
   [ "$(ext_active)" = 1 ] || { echo no; return; }
-  swaymsg -t get_tree 2>/dev/null | python3 -c '
-import json, sys
-want_pid = int(sys.argv[1])
-def walk(node, out=None):
-    if node.get("type") == "output":
-        out = node.get("name") or out
-    if node.get("pid") == want_pid:
-        fs = node.get("fullscreen") or node.get("fullscreen_mode") == 1
-        print("yes" if fs else "no")
-        sys.exit()
-    for c in (node.get("nodes") or []) + (node.get("floating_nodes") or []):
-        walk(c, out)
-walk(json.load(sys.stdin))
-print("no")
-' "$1"
+  swaymsg -t get_tree 2>/dev/null | "$HOME/.local/bin/sway-helper-json" mirror-ok "$1" "$EXT"
 }
 
 ensure_daemon() {  # way-displays owns the extended layout (the base state)
@@ -200,7 +168,7 @@ start_ws_guard() {
 
 stop_ws_guard() {
   pkill -f sway-mirror-workspace-daemon 2>/dev/null || true
-  rm -f /tmp/sway-mirror-daemon.pid
+  rm -f "${XDG_RUNTIME_DIR:-/tmp}/sway-mirror-workspace-daemon.pid"
 }
 
 mirror_post_on() {  # call after wl-mirror / hardware clone is confirmed up
@@ -208,6 +176,8 @@ mirror_post_on() {  # call after wl-mirror / hardware clone is confirmed up
 }
 
 mirror_off() {
+  mkdir -p "$(dirname "$FLAG")"
+  touch "$FLAG"
   if pgrep -x wl-mirror >/dev/null 2>&1; then
     echo "Stopping wl-mirror..."
     pkill -x wl-mirror 2>/dev/null || true
@@ -220,22 +190,7 @@ mirror_off() {
   # "__mirror" button lingers in waybar's workspace list in extended mode.
   # (If it holds user windows we leave it alone — it's a real workspace then.)
   if [ -n "${MAIN:-}" ] && [ -n "${EXT:-}" ] && [ "$EXT" != "$MAIN" ]; then
-    MSTATE=$(swaymsg -t get_workspaces 2>/dev/null | python3 -c '
-import json, sys
-try:
-    ws = json.load(sys.stdin)
-except Exception:
-    print("unknown"); sys.exit()
-m = [w for w in ws if w.get("name") == "__mirror"]
-if not m:
-    print("absent")
-elif not m[0].get("nodes") and not m[0].get("floating_nodes"):
-    used = {w.get("name") for w in ws}
-    free = next((str(n) for n in range(1, 11) if str(n) not in used), "")
-    print("empty:" + free)
-else:
-    print("busy")
-')
+    MSTATE=$(swaymsg -t get_tree 2>/dev/null | "$HOME/.local/bin/sway-helper-json" mirror-state)
     case "$MSTATE" in
       empty:*)
         FREE="${MSTATE#empty:}"
@@ -247,40 +202,9 @@ else:
         ;;
     esac
   fi
-  mkdir -p "$(dirname "$FLAG")"
-  touch "$FLAG"  # permanent auto-mirror stays off until next toggle-ON / login
   ensure_daemon
   echo "Mirror: OFF (extended)"
   notify "Mirror: OFF" "Extended layout restored"
-}
-
-hardware_capable() {
-  local mw mh
-  [ "$EXT" != "$MAIN" ] || return 1
-  read -r _ _ mw mh _ < <(main_rect)
-  [ -n "${mw:-}" ] && [ "${mw:-0}" != 0 ] || return 1
-  [ "$(ext_has_mode "$EXT" "$mw" "$mh")" = yes ]
-}
-
-hardware_clone() {
-  local mw mh ex ey ew eh
-  read -r _ _ mw mh _ < <(main_rect)
-  echo "Hardware clone ${mw}x${mh} on $EXT (stopping way-displays)..."
-  if command -v way-displays >/dev/null 2>&1; then
-    pkill -x way-displays 2>/dev/null || true
-    sleep 0.5
-  fi
-  swaymsg output "$MAIN" mode "${mw}x${mh}" pos 0 0 scale 1 >/dev/null 2>&1 || true
-  if swaymsg output "$EXT" mode "${mw}x${mh}" pos 0 0 scale 1 >/dev/null 2>&1; then
-    sleep 0.6
-    read -r ex ey ew eh _ < <(ext_rect)
-    if [ "${ex:-x}" = 0 ] && [ "${ey:-x}" = 0 ] && [ "${ew:-x}" = "$mw" ] && [ "${eh:-x}" = "$mh" ]; then
-      return 0
-    fi
-  fi
-  echo "$EXT does not support ${mw}x${mh} — falling back to wl-mirror"
-  ensure_daemon
-  return 1
 }
 
 start_software_mirror() {
@@ -288,7 +212,7 @@ start_software_mirror() {
   for b in $BACKENDS; do
     : > "$LOG"
     echo "Trying wl-mirror --backend $b ($want_scale) ..."
-    nohup wl-mirror --backend "$b" --scaling "$want_scale" --fullscreen-output "$EXT" "$MAIN" >>"$LOG" 2>&1 &
+    nohup wl-mirror --backend "$b" --scaling "$want_scale" --fullscreen-output "$EXT" "$MAIN" >>"$LOG" 2>&1 9>&- &
     pid=$!
     ok=no
     for _ in 1 2 3; do
@@ -314,6 +238,9 @@ start_software_mirror() {
 }
 
 # ------------------------------------------------------------------- main
+# Serialize hotplug/login requests and repeated shortcut presses.
+exec 9>"${XDG_RUNTIME_DIR:-/tmp}/sway-display-mirror.lock"
+flock -n 9 || exit 0
 TSV=$(outputs)
 MAIN="$MAIN_OVERRIDE"
 [ -n "$MAIN" ] || MAIN=$(printf '%s\n' "$TSV" | awk -F'\t' '$2==1 && $1 ~ /^eDP/ {print $1; exit}')
@@ -325,10 +252,6 @@ EXT_PRESENT=$(printf '%s\n' "$TSV" | awk -F'\t' -v e="$EXT" '$1==e {print 1; exi
 IS_MIRROR=no
 if pgrep -x wl-mirror >/dev/null 2>&1; then
   IS_MIRROR=software
-elif [ -n "$EXT" ] && [ -n "$MAIN" ] && [ "$EXT" != "$MAIN" ]; then
-  read -r mx my _ _ _ < <(main_rect)
-  read -r ex ey _ _ _ < <(ext_rect)
-  [ -n "${mx:-}" ] && [ "${mx:-x}" = "${ex:-y}" ] && [ "${my:-x}" = "${ey:-y}" ] && IS_MIRROR=hardware
 fi
 
 if [ "$FORCE_OFF" = 1 ] || [ "$IS_MIRROR" != no ]; then
@@ -361,16 +284,6 @@ fi
 if [ -x "$CONSOLIDATE" ]; then
   "$CONSOLIDATE" --force --quiet >/dev/null 2>&1 || true
   swaymsg focus output "$MAIN" >/dev/null 2>&1 || true
-fi
-
-if [ "$SOFT_ONLY" = 0 ] && hardware_capable; then
-  read -r _ _ mw mh _ < <(main_rect)
-  if hardware_clone; then
-    rm -f "$FLAG"
-    mirror_post_on
-    notify "Mirror: ON" "$MAIN duplicated on $EXT (hardware clone ${mw}x${mh})"
-    exit 0
-  fi
 fi
 
 if [ "$SOFT_ONLY" = 0 ] && fill16x9_capable; then

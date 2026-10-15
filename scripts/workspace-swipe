@@ -5,9 +5,11 @@
 WSW="$HOME/.local/bin/sway-workspace"
 [ -x "$WSW" ] || WSW="swaymsg"
 
-current=$(swaymsg -t get_workspaces | jq -r '.[] | select(.focused).num')
+current=$(swaymsg -t get_workspaces | jq -er '.[] | select(.focused).num') || exit 1
+# Named workspaces have num=-1; don't create workspace 0 from a swipe.
+[[ "$current" =~ ^[0-9]+$ ]] && (( current >= 1 && current <= 10 )) || exit 0
 
-case "$1" in
+case "${1:-}" in
 next)
   if [ "$current" -lt 10 ]; then
     next=$((current + 1))

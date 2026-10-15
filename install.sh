@@ -4,7 +4,7 @@
 #   ./install.sh --check        # dry-run, show what would be linked
 #   ./install.sh                # copy files (default, safe)
 #   ./install.sh --all          # ONE COMMAND: install deps + dotfiles (recommended for new device)
-#   ./install.sh --stow         # use GNU stow (symlinks)
+#   ./install.sh --stow         # symlink configuration and shell scripts
 #   ./install.sh --copy         # force copy
 #   ./install.sh --deps         # install pacman deps from deps/pacman.txt
 # One-liner for new device:
@@ -12,26 +12,45 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
-MODE="copy"
+MODE=""
 DO_DEPS=false
+TARGET_HOME="$HOME"
+OFFLINE=false
+DRY_RUN=false
 
-for arg in "$@"; do
-  case "$arg" in
+while (($#)); do
+  case "$1" in
     --all) MODE="copy"; DO_DEPS=true ;;
     --stow) MODE="stow" ;;
     --copy) MODE="copy" ;;
-    --deps) DO_DEPS=true; MODE="deps-only" ;;
-    --check) MODE="check" ;;
+    --deps) DO_DEPS=true ;;
+    --check) DRY_RUN=true ;;
+    --offline) OFFLINE=true ;;
+    --target-home)
+      [[ $# -ge 2 && "$2" == /* && "$2" != / ]] || { echo '--target-home requires an absolute home directory' >&2; exit 2; }
+      TARGET_HOME="${2%/}"; shift ;;
     -h|--help)
-      echo "Usage: $0 [--all|--stow|--copy|--check] [--deps]"
+      echo "Usage: $0 [--all|--stow|--copy|--check|--deps] [--offline] [--target-home DIRECTORY]"
       echo "  --all   One command: deps + dotfiles (new device)"
       echo "  --deps  Only deps"
       echo "  --copy  Only dotfiles (default)"
       echo "  --check Dry-run"
+      echo "  --stow Symlink files and install compiled Rust helpers"
+      echo "  --offline Build using cached Cargo dependencies"
+      echo "  --target-home Install into another home directory (no session reload)"
       exit 0
       ;;
+    *) echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
+  shift
 done
+
+if $DRY_RUN; then
+  MODE=check
+  DO_DEPS=false
+elif [[ -z "$MODE" ]]; then
+  if $DO_DEPS; then MODE=deps-only; else MODE=copy; fi
+fi
 
 say(){ echo -e "\033[1;34m[install]\033[0m $*"; }
 warn(){ echo -e "\033[1;33m[warn]\033[0m $*"; }
@@ -83,89 +102,101 @@ fi
 
 backup_if_exists(){
   local dst="$1"
-  if [ -e "$dst" ] && [ ! -L "$dst" ]; then
-    local bak="${dst}.bak.$(date +%Y%m%d_%H%M%S)"
+  if [[ -e "$dst" || -L "$dst" ]]; then
+    local bak="${dst}.bak.$(date +%Y%m%d_%H%M%S_%N)"
     say "Backing up $dst -> $bak"
-    mv "$dst" "$bak"
+    mv -T -- "$dst" "$bak"
   fi
 }
 
-install_copy(){
+install_file(){
   local src="$1" dst="$2"
   mkdir -p "$(dirname "$dst")"
+  # Move symlinks too: copying through one could overwrite a shared binary.
   backup_if_exists "$dst"
-  cp -r "$src" "$dst"
-  say "Copied $src -> $dst"
-}
-
-install_stow(){
-  command -v stow &>/dev/null || die "stow not installed (sudo pacman -S stow)"
-  # stow expects repo layout .config/sway -> we have categorized, so use --copy-like via symlinks manually
-  warn "--stow not fully implemented for categorized layout, falling back to symlink per file"
-  for src in "$REPO/sway/config" "$REPO/sway/outputs.example" "$REPO/waybar/"* "$REPO/swaync/"* "$REPO/wofi/"*; do
-    [ -e "$src" ] || continue
-    rel="${src#$REPO/}"
-    # map repo path to ~/.config path
-    case "$rel" in
-      sway/config) dst="$HOME/.config/sway/config" ;;
-      sway/outputs.example) dst="$HOME/.config/sway/outputs" ;;
-      sway/scripts/*) dst="$HOME/.config/sway/scripts/$(basename "$src")" ;;
-      sway/status.sh) dst="$HOME/.config/sway/status.sh" ;;
-      sway/wifi-menu.sh) dst="$HOME/.config/sway/wifi-menu.sh" ;;
-      waybar/*) dst="$HOME/.config/waybar/$(basename "$src")" ;;
-      swaync/*) dst="$HOME/.config/swaync/$(basename "$src")" ;;
-      wofi/*) dst="$HOME/.config/wofi/$(basename "$src")" ;;
-      scripts/*) dst="$HOME/.local/bin/$(basename "$src")" ;;
-      *) continue ;;
-    esac
-    mkdir -p "$(dirname "$dst")"
-    backup_if_exists "$dst"
-    ln -sf "$src" "$dst"
+  if [[ "$MODE" == stow ]]; then
+    ln -s -- "$src" "$dst"
     say "Linked $src -> $dst"
-  done
-}
-
-check_mode(){
-  say "DRY-RUN — would install:"
-  echo "  sway/config              -> ~/.config/sway/config"
-  echo "  sway/outputs.example     -> ~/.config/sway/outputs (review before overwrite)"
-  echo "  waybar/*                 -> ~/.config/waybar/"
-  echo "  swaync/*                 -> ~/.config/swaync/"
-  echo "  wofi/*                   -> ~/.config/wofi/"
-  echo "  scripts/*                -> ~/.local/bin/"
-  echo "Run without --check to apply."
-}
-
-if [[ "$MODE" == "deps-only" ]]; then
-  say "Deps installed — skipping dotfiles (use --all for full install)"
-  say "Done. Validate with: sway -c ~/.config/sway/config --validate"
-  exit 0
-elif [[ "$MODE" == "check" ]]; then
-  check_mode; exit 0
-elif [[ "$MODE" == "stow" ]]; then
-  install_stow
-else
-  say "Installing via copy (safe, backups created)..."
-  install_copy "$REPO/sway/config" "$HOME/.config/sway/config"
-  # do not overwrite real outputs automatically — instruct user
-  if [ ! -e "$HOME/.config/sway/outputs" ]; then
-    install_copy "$REPO/sway/outputs.example" "$HOME/.config/sway/outputs"
   else
-    say "Skipping outputs (exists): $HOME/.config/sway/outputs — compare with sway/outputs.example manually"
+    cp -p -- "$src" "$dst"
+    say "Copied $src -> $dst"
   fi
-  mkdir -p "$HOME/.config/sway/scripts"
-  install_copy "$REPO/sway/scripts/workspace-fade.sh" "$HOME/.config/sway/scripts/workspace-fade.sh"
-  install_copy "$REPO/sway/status.sh" "$HOME/.config/sway/status.sh"
-  install_copy "$REPO/sway/wifi-menu.sh" "$HOME/.config/sway/wifi-menu.sh"
-  mkdir -p "$HOME/.config/waybar"
-  for f in "$REPO/waybar/"*; do [ -f "$f" ] && install_copy "$f" "$HOME/.config/waybar/$(basename "$f")"; done
-  mkdir -p "$HOME/.config/swaync"
-  for f in "$REPO/swaync/"*; do [ -f "$f" ] && install_copy "$f" "$HOME/.config/swaync/$(basename "$f")"; done
-  mkdir -p "$HOME/.config/wofi"
-  for f in "$REPO/wofi/"*; do [ -f "$f" ] && install_copy "$f" "$HOME/.config/wofi/$(basename "$f")"; done
-  mkdir -p "$HOME/.local/bin"
-  for f in "$REPO/scripts/"*; do [ -f "$f" ] && install_copy "$f" "$HOME/.local/bin/$(basename "$f")" && chmod +x "$HOME/.local/bin/$(basename "$f")"; done
+}
+
+if [[ "$MODE" == deps-only ]]; then
+  say "Dependency installation finished. Use --all to also install dotfiles."
+  exit 0
+elif [[ "$MODE" == check ]]; then
+  say "DRY-RUN: target $TARGET_HOME (no packages, builds, or files changed)"
+  echo "  sway/{config,workspaces,scripts,status.sh,wifi-menu.sh} -> .config/sway/"
+  echo "  sway/outputs.example -> .config/sway/outputs (only if absent; inactive template)"
+  echo "  way-displays/cfg.yaml -> .config/way-displays/cfg.yaml"
+  echo "  waybar/*, swaync/*, wofi/* -> .config/"
+  echo "  scripts/* -> .local/bin/"
+  echo "  rust/sway-helpers -> build binary in .local/libexec/ and link commands in .local/bin/"
+  echo "  rust/waybar-helpers -> build native GTK dropdown/media/password helpers"
+  exit 0
 fi
 
-say "Done. Validate with: sway -c ~/.config/sway/config --validate && waybar --help | head"
-say "Reload sway: Mod+Shift+c  | Restart waybar: pkill waybar; waybar &"
+command -v cargo >/dev/null || die "Cargo is required. Install Rust, or run ./install.sh --all."
+RUST_PROJECT="$REPO/rust/sway-helpers"
+CARGO_ARGS=(build --locked --release --manifest-path "$RUST_PROJECT/Cargo.toml" --target-dir "$RUST_PROJECT/target")
+INSTALL_ARGS=(--prefix "$TARGET_HOME/.local" --binary-only)
+if $OFFLINE; then
+  CARGO_ARGS+=(--offline)
+  INSTALL_ARGS+=(--offline)
+fi
+# Finish compilation before replacing any installed configuration or helper.
+cargo "${CARGO_ARGS[@]}"
+WAYBAR_PROJECT="$REPO/rust/waybar-helpers"
+WAYBAR_CARGO_ARGS=(build --locked --release --manifest-path "$WAYBAR_PROJECT/Cargo.toml" --target-dir "$WAYBAR_PROJECT/target")
+WAYBAR_INSTALL_ARGS=(--prefix "$TARGET_HOME/.local")
+if $OFFLINE; then
+  WAYBAR_CARGO_ARGS+=(--offline)
+  WAYBAR_INSTALL_ARGS+=(--offline)
+fi
+cargo "${WAYBAR_CARGO_ARGS[@]}"
+
+say "Installing in $MODE mode (existing files and links are backed up)..."
+for name in config workspaces status.sh wifi-menu.sh; do
+  install_file "$REPO/sway/$name" "$TARGET_HOME/.config/sway/$name"
+done
+if [[ ! -e "$TARGET_HOME/.config/sway/outputs" && ! -L "$TARGET_HOME/.config/sway/outputs" ]]; then
+  install_file "$REPO/sway/outputs.example" "$TARGET_HOME/.config/sway/outputs"
+else
+  say "Keeping existing outputs file; way-displays manages active output settings."
+fi
+for f in "$REPO/sway/scripts/"*; do
+  [[ -f "$f" ]] || continue
+  install_file "$f" "$TARGET_HOME/.config/sway/scripts/$(basename "$f")"
+done
+for dir in way-displays waybar swaync wofi; do
+  for f in "$REPO/$dir/"*; do
+    [[ -f "$f" ]] || continue
+    install_file "$f" "$TARGET_HOME/.config/$dir/$(basename "$f")"
+  done
+done
+for f in "$REPO/scripts/"*; do
+  [[ -f "$f" ]] || continue
+  install_file "$f" "$TARGET_HOME/.local/bin/$(basename "$f")"
+done
+for name in sway-helpers sway-workspace sway-mirror-workspaces sway-mirror-workspace-daemon sway-gamepad-idle-guard sway-game-freeze-daemon sway-helper-json; do
+  backup_if_exists "$TARGET_HOME/.local/bin/$name"
+done
+backup_if_exists "$TARGET_HOME/.local/libexec/sway-helpers"
+sh "$RUST_PROJECT/install.sh" "${INSTALL_ARGS[@]}"
+for name in waybar-helpers waybar-dropdown waybar-media waybar-wifi-password; do
+  backup_if_exists "$TARGET_HOME/.local/bin/$name"
+done
+backup_if_exists "$TARGET_HOME/.local/libexec/waybar-helpers"
+for name in test-waybar-interactive test-waybar-anchoring; do
+  backup_if_exists "$TARGET_HOME/.local/bin/$name"
+done
+# Retire old Python runtime entry points while preserving them in backups.
+for name in mediaplayer.py wifi_pass.py; do
+  backup_if_exists "$TARGET_HOME/.config/waybar/$name"
+done
+sh "$WAYBAR_PROJECT/install.sh" "${WAYBAR_INSTALL_ARGS[@]}"
+
+say "Done. Config: $TARGET_HOME/.config/sway/config"
+say "Validate with sway -c <config-path> --validate, then reload Sway with Alt+Shift+c."

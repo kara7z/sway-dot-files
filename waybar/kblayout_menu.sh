@@ -5,6 +5,7 @@
 # swaps, Esc/Cancel closes. Also still prints the active layout code for the bar.
 MENU_KIND=kblayout                              # what a second click compares against
 DROPDOWN="${DROPDOWN:-$HOME/.local/bin/waybar-dropdown}"
+WAYBAR_HELPERS="${WAYBAR_HELPERS:-$HOME/.local/bin/waybar-helpers}"
 # The layout button sits left of the network module at roughly x=1409..1484,
 # center x=1446 on a 1920 px output (pixel-measured with grim). The panel opens
 # centered under the button, clamped to the monitor by waybar-dropdown.
@@ -69,40 +70,20 @@ trap 'panel=$(cat "$LOCK/panel" 2>/dev/null); [ -n "$panel" ] && kill -TERM "$pa
 # Layouts come from the keyboard itself: the first device with more than one
 # layout wins; fall back to the configured us,ara,fr triple.
 layouts=$(swaymsg -t get_inputs 2>/dev/null |
-    python3 -c 'import json,sys
-try:
-    data = json.load(sys.stdin)
-except Exception:
-    data = []
-names = []
-for dev in data:
-    if dev.get("type") == "keyboard" and len(dev.get("xkb_layout_names") or []) > 1:
-        names = dev["xkb_layout_names"]
-        break
-print("\n".join(names))' 2>/dev/null)
+    "$WAYBAR_HELPERS" layouts)
 [ -z "$layouts" ] && layouts="English (US)
 Arabic
 French"
 
 current=$(swaymsg -t get_inputs 2>/dev/null |
-    python3 -c 'import json,sys
-try:
-    data = json.load(sys.stdin)
-except Exception:
-    data = []
-name = ""
-for dev in data:
-    if dev.get("type") == "keyboard" and len(dev.get("xkb_layout_names") or []) > 1:
-        name = dev.get("xkb_active_layout_name") or ""
-        break
-print(name)' 2>/dev/null)
+    "$WAYBAR_HELPERS" active-layout)
 
 active="$current"
 [ -z "$active" ] && active=$(printf '%s\n' "$layouts" | sed -n '1p')
 
 maxlen=$(printf '%s\n' "$layouts" | awk '{ print length }' | sort -rn | head -1)
 width=$((maxlen * 10 + 40))
-[ "$width" -gt 640 ] && width=640   # keep the menu on-screen
+[ "$width" -gt 560 ] && width=560   # match the dropdown's supported maximum
 [ "$width" -lt 300 ] && width=300
 
 # Mark the active layout (with *) so it reads as a status, and sort the active
@@ -113,7 +94,7 @@ rows=$(printf '%s\n' "$layouts" | awk -v a="$active" '
 
 chosen=$(printf '%s\n' "$rows" | run_dropdown --anchor-x "$KBLAYOUT_ANCHOR_X" \
     --width "$width" --prompt "Keyboard" --max-lines 5 \
-    --anchor-edge bottom --stay-open --refocus)
+    --anchor-edge top --margin-top 5 --stay-open --refocus)
 
 [ -z "$chosen" ] && exit 0
 # Strip the markers (row looks like "*  English (US) (active)") back to a layout

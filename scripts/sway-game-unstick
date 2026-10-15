@@ -43,10 +43,14 @@ con_id=$(printf '%s' "$view" | jq -r '.id')
 was_fullscreen=$(printf '%s' "$view" | jq -r '.fullscreen_mode // 0')
 say "focused view $con_id (was fullscreen: $was_fullscreen)"
 
-if [ "$was_fullscreen" = "1" ]; then
+if [ "$was_fullscreen" = "1" ] || [ "$was_fullscreen" = "2" ]; then
   run swaymsg "[con_id=$con_id] fullscreen disable"
   nap
-  run swaymsg "[con_id=$con_id] fullscreen enable"
+  if [ "$was_fullscreen" = "2" ]; then
+    run swaymsg "[con_id=$con_id] fullscreen enable global"
+  else
+    run swaymsg "[con_id=$con_id] fullscreen enable"
+  fi
   say "fullscreen toggled off/on for view $con_id"
 else
   run swaymsg "[con_id=$con_id] fullscreen enable"

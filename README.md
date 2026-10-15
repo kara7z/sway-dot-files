@@ -1,194 +1,148 @@
 # sway-dot-files
 
-Backup of **SwayFX** + **Waybar** + **SwayNC** + **Wofi** for CachyOS/Arch — kitty, firefox, nautilus, nwg-displays.
+SwayFX, Waybar, SwayNC, Wofi, and way-displays configuration for CachyOS/Arch.
+The Sway configuration and helper fixes reviewed on 2026-10-15 are included here,
+along with the Rust source, pinned dependencies, tests, and installer.
+The custom Waybar Python helpers have also been migrated to Rust; see
+[the migration results](docs/WAYBAR_RUST_MIGRATION.md).
 
-> **Host:** kara-pc, CachyOS rolling, swayfx `r7135.87754778`, waybar `0.15.0`, swaync `0.12.6` — Laptop `eDP-1 1920x1080` + `HDMI-A-1 3840x2160`
+The reviewed machine uses SwayFX 0.6 (based on Sway 1.12), an eDP-1 laptop panel
+at 1920×1200, and a Samsung external display configured for its advertised
+1920×1080 at 60 Hz. Adjust display names and modes for another machine.
 
-## Screenshots
+## Install
 
-Add to `screenshots/` (not tracked yet): `grim ~/Pictures/$(date +%Y%m%d_%H%M).png`
-
-## Structure
-
-```
-sway-dot-files/
-├── sway/
-│   ├── config              # fixed: include outputs, Qt env via systemd
-│   ├── outputs.example     # sanitized template (copy to outputs)
-│   ├── scripts/workspace-fade.sh
-│   ├── status.sh           # legacy swaybar (inactive)
-│   └── wifi-menu.sh        # legacy (use waybar/wifi_menu.sh)
-├── waybar/
-│   ├── config              # JSONC (// comments, Waybar supports JSONC)
-│   ├── style.css           # black/white + translucent overlays
-│   ├── kblayout.sh         # US/AR/FR poll (jq, 0.25s) -> bar text only (no toast)
-│   ├── kblayout_menu.sh    # anchored layout picker (waybar-dropdown)
-│   ├── wifi_menu.sh        # nmcli (cached) + waybar-dropdown (anchored)
-│   ├── wifi_pass.py        # legacy GTK3 dialog (replaced by dropdown --password)
-│   ├── power_menu.sh       # waybar-dropdown power menu (hibernate auto-hidden)
-│   ├── mediaplayer.py      # playerctl MPRIS → JSON
-│   └── power_menu.xml      # legacy GTK menu (unused)
-├── swaync/
-│   ├── config.json         # 250ms synced to swayfx
-│   └── style.css           # black + blue #2266cc
-├── wofi/
-│   ├── power.css           # rgba(0,0,0,0.6) border white, FiraCode 22px
-│   └── power_config        # width 250 height 300
-├── scripts/
-│   ├── sway-display-toggle # $mod+p: duplicate screen on external (SHM wl-mirror)
-│   ├── sway-wl-mirror-toggle # legacy alias -> sway-display-toggle --software-only
-│   ├── sway-mirror-1080p   # legacy alias -> sway-display-toggle --software-only
-│   ├── sway-idle-lock      # one swayidle: lock 5 min, outputs off 10 min, lock before sleep
-│   ├── sway-lock           # lock now: classic wallpaper lock (shared by idle/before-sleep/Super+L)
-│   ├── sway-brightness     # Fn keys + waybar scroll: 2% steps, clamped to 1%..100%
-│   ├── waybar-dropdown     # dropdown above the bar, under the clicked button (gtk-layer-shell)
-│   ├── sway-game-unstick   # unstick a frozen fullscreen game (Super+G: fullscreen off/on)
-│   ├── sway-game-freeze-daemon # auto-detect & auto-unstick frozen game frames in background
-│   ├── sway-gamepad-idle-guard # no idle lock while a gamepad is used (evdev -> inhibit_idle)
-│   └── workspace-swipe     # 3-finger swipe
-├── deps/pacman.txt         # pacman -Q list
-├── docs/
-│   ├── ANIMATIONS.md       # blur 5/5, corner 0, shadows disable, 250ms
-│   ├── ACTIVE_INACTIVE_STYLES.md # sway client.* + waybar states
-│   ├── WAYBAR_MODULES.md   # 10 active + 5 inactive modules
-│   └── APPS.md             # 30 bindsym exec + waybar apps
-└── install.sh
-```
-
-## Quick Install — One Command (new device)
+From this checkout:
 
 ```sh
-git clone https://github.com/kara7z/sway-dot-files.git && cd sway-dot-files && ./install.sh --all
-# --all = deps (49 pacman + 4 AUR) + dotfiles in one go
-# then reload
-swaymsg reload && waybar --version
+./install.sh --check         # preview only; never installs packages or builds
+./install.sh --copy          # build Rust helpers and copy dotfiles (default)
+./install.sh --stow          # symlink dotfiles; install compiled Rust helpers
+./install.sh --all           # install Arch/AUR dependencies, then build and copy
+./install.sh --deps          # install dependencies only
 ```
 
-**Other modes:**
-```sh
-./install.sh --check   # dry-run
-./install.sh --deps    # deps only
-./install.sh --copy    # dotfiles only (default, backs up to *.bak.*)
-./install.sh           # same as --copy
-```
+Cargo and a C linker are needed to build the helpers. `deps/pacman.txt` includes
+`rust` and `base-devel`; the compositor requires SwayFX. Builds use `Cargo.lock`
+and can download missing crates. Add `--offline` to use an existing Cargo cache.
+AUR packages require `yay` or `paru`, or manual installation.
 
-**One-liner without git (curl):**
-```sh
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/kara7z/sway-dot-files/main/install.sh)" -- --all
-```
+Existing files **and symlinks** are renamed to timestamped `.bak.*` siblings
+before replacement. Both copy and symlink modes install the workspace include,
+way-displays settings, shell scripts, and Rust command entry points. The installer
+does not reload Sway or launch programs. `--stow` uses direct symlinks and does not
+require GNU Stow; keep this checkout at its current location when using it.
 
-**Outputs:** `sway/outputs.example` is sanitized — copy to `~/.config/sway/outputs` and edit `pos/mode/scale` via `nwg-displays` or manually.
-
-### Stow Alternative
+To verify an installation elsewhere without changing the current home directory:
 
 ```sh
-sudo pacman -S stow
-./install.sh --stow  # symlinks (fallback for categorized layout)
+./install.sh --copy --offline --target-home /tmp/sway-install-review
 ```
 
-## Keymap (Alt = $mod, Super = $mod2)
+The source remains in `rust/sway-helpers/`. The executable is installed to
+`~/.local/libexec/sway-helpers`, with command symlinks in `~/.local/bin/`.
+Keep the repository to rebuild or update it.
 
-| Bind | Action | Source |
-|------|--------|--------|
-| `Alt+Return` | kitty | `sway/config:110` |
-| `Super+d` | nwg-displays | `111` |
-| `Super+b` | firefox | `112` |
-| `Super+w` | waypaper | `113` |
-| `Super+e` | nautilus | `114` |
-| `Alt+d` | wmenu-run | `118` |
-| `Alt+Shift+r` | restart waybar | `120` |
-| `Alt+h/l` `Alt+Left/Right` | focus | `142` |
-| `Alt+Shift+h/j/k/l` | move | `151` |
-| `Alt+1..0` / `Alt+Shift+1..0` | workspace switch/move | `164/175` |
-| `Alt+b/v` | splith/splitv | `193` |
-| `Alt+s/w/e` | stacking/tabbed/toggle | `197` |
-| `Alt+f` | fullscreen | `202` |
-| `Alt+Shift+space` | floating toggle | `205` |
-| `Alt+minus/Shift+minus` | scratchpad show/move | `219` |
-| `Alt+r` | resize mode (h/j/k/l) | `227` |
-| `Super+space` | xkb switch US/AR | `132` |
-| `Super+L` | lock the screen now (`~/.local/bin/sway-lock`: classic wallpaper lock) | `196` |
-| `Super+G` | unstick a frozen fullscreen game (toggle fullscreen off/on on the focused window) | `199` |
-| `XF86Audio*` `XF86MonBrightness*` | pactl/playerctl/`sway-brightness` (2% step, 1% floor) | `252/265` |
-| `Alt+p` (or `XF86Display`) | duplicate the main screen on the connected external (toggle) | `271/276` |
-| `Print` | grim | `280` |
-| `3-finger swipe` | workspace prev/next | `100` |
-
-## Animations
-
-`docs/ANIMATIONS.md`: `animation_duration_ms 250` `blur enable passes 5 radius 5` `corner_radius 0` `shadows disable` — preserves 250ms while fixing workspace-switch wallpaper bug via `include` order (`sway/config:291`).
-
-## Styles
-
-`docs/ACTIVE_INACTIVE_STYLES.md`:
-- Sway `client.focused #2266cc` blue vs `unfocused #333333` dark gray (`sway/config:48`)
-- Waybar active `rgba(0,5,255,0.22)` + `inset 0 -3px #fff` (`style.css:71`), urgent `rgba(255,0,0,0.22)` (`78`), battery critical `blink #f53c3c` (`153`), swaync `slideInRight 250ms` synced.
-
-## Waybar
-
-`docs/WAYBAR_MODULES.md`: left `workspaces/mode/scratchpad`, center `clock`, right `notification/tray/pulseaudio/kblayout/network/power-profiles/backlight/battery/power` — uses `custom/kblayout` (`kblayout.sh`, `jq` poll 0.25s), `network` (`wifi_menu.sh`, anchored dropdown), `pulseaudio` (`pavucontrol`); `mpd` is defined but disabled (no MPD server on this box).
-
-## Fixes from Backup
-
-- `exec export QT_QPA_PLATFORMTHEME=qt6ct:305` → `systemctl --user set-environment` + `dbus-update-activation-environment` (`sway/config:307`)
-- Added `include ~/.config/sway/outputs:291` before system include
-
-## Idle Lock & Gamepads
-
-`scripts/sway-idle-lock` runs exactly one `swayidle` live: lock after 5 min (`swaylock` + current
-wallpaper), outputs off after 10 min, lock before sleep. A gamepad is read by the game straight
-from `/dev/input`, so sway counts the session as idle and locked it mid-play; two fixes are in
-`sway/config` + `scripts/`:
-
-- `for_window [class="^steam_app_"] inhibit_idle focus` (Steam/Proton, `.exe`, `gamescope`,
-  Minecraft, Lutris, Heroic, Steam client/Big Picture) — a view holding sway's native idle
-  inhibitor pauses **both** timers while it has focus; `focus` means the lock resumes as soon as
-  the game loses focus / closes (5 min later), `before-sleep` locking is untouched.
-- `scripts/sway-gamepad-idle-guard` — watches the joystick evdev devices (`input` group) and
-  holds/clears the same `inhibit_idle focus` from real pad input, which also covers games whose
-  class/app_id is not in the list. Release after 300 s without pad input
-  (`GAMEPAD_IDLE_GUARD_RELEASE_AFTER`).
-
-Check the live state with
-`~/.local/bin/sway-gamepad-idle-guard --status` (pads, parsed rules, views that actually hold an
-inhibitor right now):
+After reviewing the display settings, validate and reload in your Sway session:
 
 ```sh
-swaymsg -t get_tree | jq -r '.. | objects | select((.idle_inhibitors.user? // "none") != "none")
-  | "view \(.id) [\(.idle_inhibitors.user)] \(.name)"'
+sway -c ~/.config/sway/config --validate
+swaymsg reload
 ```
 
-Verified 2026-09-25 with a 3 s `swayidle` inside the live session: timer fires normally, does not
-fire while the focused game view holds the inhibitor, fires again once the inhibitor is cleared.
+A newly installed `exec` startup command runs at the next Sway login; reload only
+reruns `exec_always` commands. The configuration uses `way-displays` for display
+management. `sway/outputs.example` is an inactive template and an existing outputs
+file is preserved. Do not enable its include while way-displays controls layouts.
+Wallpapers in `~/Pictures/Wallpapers` are personal assets and are not bundled.
 
-### Fullscreen games: keep frames flowing (SwayFX + XWayland/Proton)
+## Files and helpers
 
-- `scripts/sway-game-freeze-daemon` runs in the background (`exec_always` in `sway/config`), monitoring
-  fullscreen games. If controller input is active while screen pixels stay completely frozen for > 2 seconds,
-  it automatically toggles fullscreen off/on to unstick SwayFX/XWayland frame presentation immediately.
-- `scripts/sway-game-unstick` (bound to `Super+G`) remains available for manual unfreezing anytime.
-- New Steam/Proton windows automatically start with per-window SwayFX `blur disable` so fullscreen games
-  never pay for the desktop's blur render pipeline.
+| Path | Contents |
+|------|----------|
+| `sway/` | Main configuration, workspace output preference, legacy bar/menu scripts |
+| `way-displays/cfg.yaml` | Display modes, lid handling, wallpaper/mirror callbacks |
+| `rust/sway-helpers/` | Rust source, Cargo.lock, unit/integration tests, standalone installer |
+| `rust/waybar-helpers/` | Native GTK menus, media output, and keyboard JSON parsing |
+| `scripts/` | Shell Sway helpers, workspace swipe, and Waybar dropdown utilities |
+| `waybar/`, `swaync/`, `wofi/` | Panel, notification, and menu configuration |
+| `deps/pacman.txt` | Arch/CachyOS package dependencies |
+| `docs/SWAY_AUDIT.md` | Fixed bugs, verification results, and hardware testing limits |
+| `tests/install.sh` | Isolated installation and upgrade checks |
 
-### Lock screen (Super+L, idle timeout and before-sleep)
+All Python previously used in the **Sway helpers**, including embedded snippets
+in display and wallpaper scripts, has been replaced with Rust. One executable
+provides these commands:
 
-`scripts/sway-lock` runs the classic lock screen with stock `swaylock`: current wallpaper
-full-screen, then swaylock's default prompt. No built clock/date/hint, and no
-`~/.config/swaylock/config` theme (that file is intentionally absent so swaylock uses its
-defaults). A flock + `pgrep` guard keeps two callers from ever stacking two lock screens
-(the old bug: unlock once, still locked).
+- `sway-workspace`
+- `sway-mirror-workspaces`
+- `sway-mirror-workspace-daemon`
+- `sway-gamepad-idle-guard`
+- `sway-game-freeze-daemon` (optional, disabled at startup)
+- `sway-helper-json`
 
-Usage: `sway-lock --dry-run`, `sway-lock --print-wallpaper`.
-Tune with `LOCK_WALLPAPER=/path.png` (force the lock image).
+See [the Rust helper documentation](rust/sway-helpers/README.md) for options.
+Waybar's GTK dropdown, password prompt, media output, and embedded keyboard
+JSON parsing also use Rust. Shell menu launchers remain in `waybar/`.
+Third-party applications retain their own dependencies.
+
+The Waybar executable is installed to `~/.local/libexec/waybar-helpers`, with
+`waybar-dropdown`, `waybar-media`, `waybar-wifi-password`, and `waybar-helpers`
+entry points in `~/.local/bin`. Its GTK3, gtk-layer-shell, and X11 libraries
+come from the package list. Python is optional for GUI test scripts only.
+
+## Behavior and keybindings
+
+`Alt` is `$mod`; `Super` is `$mod2`.
+
+| Binding | Action |
+|---------|--------|
+| Alt+Return | Kitty |
+| Alt+d | Application launcher |
+| Super+b / Super+e / Super+w | Firefox / files / wallpaper picker |
+| Super+d | nwg-displays (way-displays owns the active layout) |
+| Alt+Shift+c / Alt+Shift+r | Reload Sway / restart Waybar |
+| Alt+1…0 / Alt+Shift+1…0 | Switch workspace / move container |
+| Three-finger swipe | Previous/next numbered workspace |
+| Alt+f | Toggle fullscreen |
+| Alt+p / Super+p / display key | Toggle wl-mirror on the external output |
+| Super+l | Lock screen |
+| Super+g | Restore a frozen fullscreen game's presentation |
+| Super+Space | Cycle US/Arabic/French keyboard layouts |
+| Print | Save a screenshot in `~/Pictures/Screenshots` |
+
+Mirroring uses wl-mirror with fit scaling to preserve the laptop's complete
+16:10 image on a 16:9 external display. The workspace guard keeps the mirror on
+its dedicated workspace and other workspaces on the main display while mirroring.
+A manual toggle off remains off through subsequent hotplug callbacks until
+re-enabled or a new session starts.
+
+The idle helper locks after five minutes, powers outputs off after ten, and
+locks before sleep. Fullscreen visible windows inhibit idle; the permanently
+fullscreen mirror is explicitly excluded. The Rust gamepad guard reads evdev
+activity and does not take ownership of existing inhibitors. Access to gamepad
+input devices must be available to the user.
+
+`Super+g` preserves ordinary and global fullscreen. The optional freeze watcher
+is disabled because unchanged pixels alone cannot reliably prove a game froze.
 
 ## Validate
 
 ```sh
+cargo test --locked --offline --manifest-path rust/sway-helpers/Cargo.toml
+cargo clippy --locked --offline --manifest-path rust/sway-helpers/Cargo.toml --all-targets -- -D warnings
+cargo fmt --manifest-path rust/sway-helpers/Cargo.toml -- --check
+cargo test --locked --offline --manifest-path rust/waybar-helpers/Cargo.toml
+cargo clippy --locked --offline --manifest-path rust/waybar-helpers/Cargo.toml --all-targets -- -D warnings
+bash tests/install.sh
 sway -c ~/.config/sway/config --validate
-python3 -m json.tool ~/.config/waybar/config > /dev/null  # or use config.json
-python3 -m py_compile ~/.config/waybar/wifi_pass.py ~/.local/bin/waybar-dropdown
-bash -n ~/.config/sway/status.sh ~/.config/waybar/*.sh
-printf 'A\nB\n' | ~/.local/bin/waybar-dropdown --dry-run  # menu shape without GUI
+~/.local/bin/sway-gamepad-idle-guard --status
+~/.local/bin/sway-lock --dry-run
 ```
+
+Omit `--offline` for Cargo's initial dependency download. The installation test
+uses cached crates and temporary destinations, leaving the live configuration
+alone. The audit includes tests with virtual outputs and synthetic gamepad events;
+physical TV/controller and suspend/resume behavior still need hardware testing.
 
 License: MIT

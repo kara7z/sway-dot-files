@@ -1,0 +1,314 @@
+#!/bin/bash
+# $mod+p — DUPLICATE ("mirror") the main screen onto the connected external.
+#
+#   press once  : laptop screen duplicated on the TV/monitor (eDP-* -> DP-*/HDMI-*)
+#   press again : back to extended (way-displays layout)
+#
+# WHY THIS VERSION (2026-09-24)
+#   wl-mirror's DMA-BUF/GL backends cannot import eDP-1's framebuffer while
+#   `output eDP-1 render_bit_depth 10` is active (10-bit XRGB2101010):
+#     error: mirror-screencopy::on_ready(): failed to find GL format for drm format
+#   The SHM backends do a plain memory copy (no GL import) and capture 10-bit
+#   fine, so they are tried first: extcopy-shm -> screencopy-shm -> auto.
+#   Override the order with SWAY_MIRROR_BACKENDS="screencopy-shm auto".
+#   Every backend is verified for real (process alive, no capture errors AND a
+#   fullscreen wl-mirror window on the target output) — a window that silently
+#   falls back to the laptop screen is rejected.
+#
+#   Mirroring uses wl-mirror. Overlapping output positions do not clone
+#   tiled workspaces in Sway. way-displays owns the extended layout.
+#
+#   16:9 externals get the no-bars treatment: the external is switched to
+#   1920x1080@60 and mirrored with --scaling cover, so the picture fills it
+#   edge-to-edge. The laptop panel cannot do 16:9 itself (only 1920x1200
+#   modes exist), so the ~7% top/bottom crop happens on the TV side.
+#   Set SWAY_MIRROR_FILL16X9=0 to keep native resolution + letterbox instead.
+#   Everything is restored to native by ensure_daemon on toggle-off.
+#
+# Usage: sway-display-toggle [--software-only] [--off] [--main NAME] [--ext NAME]
+# Exit : 0 toggled | 1 no usable external display | 2 mirror failed
+set -u
+
+SCALING="${SWAY_MIRROR_SCALING:-fit}"                                 # fit letterboxes 16:10 on 16:9 (full image visible); set SWAY_MIRROR_SCALING=cover to fill edge-to-edge with a small top/bottom crop
+FILL16X9="${SWAY_MIRROR_FILL16X9:-1}"                                # 1 = 16:9 externals to 1920x1080 + cover (no bars)
+BACKENDS="${SWAY_MIRROR_BACKENDS:-extcopy-shm screencopy-shm auto}"  # SHM first (10-bit safe)
+LOG=/tmp/wl-mirror.log
+FLAG="${XDG_CACHE_HOME:-$HOME/.cache}/sway-mirror-manual-off"
+MIRROR_WS="${SWAY_MIRROR_WS:-__mirror}"
+CONSOLIDATE="$HOME/.local/bin/sway-mirror-workspaces"
+DAEMON="$HOME/.local/bin/sway-mirror-workspace-daemon"
+SOFT_ONLY=0
+FORCE_OFF=0
+MAIN_OVERRIDE=""
+EXT_OVERRIDE=""
+USED_BACKEND=""
+USED_SCALE=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --software-only) SOFT_ONLY=1 ;;
+    --off)           FORCE_OFF=1 ;;
+    --main)          MAIN_OVERRIDE="${2:-}"; shift ;;
+    --ext)           EXT_OVERRIDE="${2:-}";  shift ;;
+    -h|--help)       sed -n '2,36p' "$0"; exit 0 ;;
+    *)               echo "unknown option: $1" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+# swaymsg needs SWAYSOCK when this script runs outside a sway-spawned shell.
+if [ -z "${SWAYSOCK:-}" ]; then
+  SWAYSOCK=$(ls /run/user/"$(id -u)"/sway-ipc.* 2>/dev/null | head -1)
+  export SWAYSOCK
+fi
+
+notify() {  # notify "title" "body"
+  notify-send -t 2500 "$1" "$2" 2>/dev/null || echo "$1: $2"
+}
+
+# name, active, x, y, w, h, current_w, current_h, current_hz  (tab separated)
+outputs() {
+  swaymsg -t get_outputs 2>/dev/null | "$HOME/.local/bin/sway-helper-json" outputs-tsv
+}
+
+ext_has_mode() {  # ext_has_mode NAME W H -> yes/no
+  swaymsg -t get_outputs 2>/dev/null | "$HOME/.local/bin/sway-helper-json" has-mode "$1" "$2" "$3"
+}
+
+main_rect() { outputs | awk -F'\t' -v m="$MAIN" '$1==m {print $3, $4, $7, $8, $9}' ; }
+ext_rect()  { outputs | awk -F'\t' -v e="$EXT"  '$1==e {print $3, $4, $7, $8, $9}' ; }
+ext_active(){ outputs | awk -F'\t' -v e="$EXT" '$1==e {print $2; exit}' ; }
+
+fill16x9_capable() {
+  local ew eh
+  [ "${FILL16X9:-1}" = 1 ] || return 1
+  [ "$EXT" != "$MAIN" ] || return 1
+  read -r _ _ ew eh _ < <(ext_rect)
+  [ -n "${ew:-}" ] && [ "${eh:-0}" -gt 0 ] || return 1
+  [ $((ew * 9)) -eq $((eh * 16)) ] || return 1
+  if [ "$ew" = 1920 ] && [ "$eh" = 1080 ]; then
+    return 0
+  fi
+  [ "$(ext_has_mode "$EXT" 1920 1080)" = yes ]
+}
+
+fill16x9_mirror() {
+  local mx my mw ex ey ew eh switch
+  read -r mx my mw _ _ < <(main_rect)
+  read -r ex ey ew eh _ < <(ext_rect)
+  if ! [[ "$mx" =~ ^[0-9]+$ && "$my" =~ ^[0-9]+$ && "$mw" =~ ^[0-9]+$ ]]; then
+    echo "Cannot place $EXT next to $MAIN"
+    return 1
+  fi
+  echo "Fill 16:9 on $EXT: 1920x1080 + cover (no bars)..."
+  switch=1
+  if [ "$ew" = 1920 ] && [ "$eh" = 1080 ]; then
+    switch=0
+  fi
+  if [ "$switch" = 1 ]; then
+    if command -v way-displays >/dev/null 2>&1; then
+      pkill -x way-displays 2>/dev/null || true
+      sleep 0.5
+    fi
+    if ! swaymsg output "$EXT" mode 1920x1080 pos $((mx + mw)) "$my" scale 1 >/dev/null 2>&1; then
+      echo "$EXT rejected 1920x1080 — falling back"
+      ensure_daemon
+      return 1
+    fi
+    sleep 0.6
+    read -r ex ey ew eh _ < <(ext_rect)
+    if [ "${ew:-x}" != 1920 ] || [ "${eh:-x}" != 1080 ]; then
+      echo "$EXT did not enter 1920x1080 — falling back"
+      ensure_daemon
+      return 1
+    fi
+  else
+    ensure_daemon
+  fi
+  if start_software_mirror cover; then
+    return 0
+  fi
+  ensure_daemon
+  return 1
+}
+
+# yes only when a wl-mirror window is really fullscreen on the target output.
+mirror_ok() {  # mirror_ok PID
+  [ "$(ext_active)" = 1 ] || { echo no; return; }
+  swaymsg -t get_tree 2>/dev/null | "$HOME/.local/bin/sway-helper-json" mirror-ok "$1" "$EXT"
+}
+
+ensure_daemon() {  # way-displays owns the extended layout (the base state)
+  if ! command -v way-displays >/dev/null 2>&1; then   # no daemon: park EXT right of MAIN
+    [ -n "$EXT" ] && swaymsg output "$EXT" pos "$(main_rect | awk '{print $3}')" 0 >/dev/null 2>&1
+    return 0
+  fi
+  pgrep -x way-displays >/dev/null 2>&1 && return 0
+  swaymsg exec "way-displays > /tmp/way-displays.${XDG_VTNR:-0}.${USER}.log 2>&1" >/dev/null 2>&1 ||
+    nohup way-displays >/tmp/way-displays.${XDG_VTNR:-0}.${USER}.log 2>&1 &
+  for _ in 1 2 3 4 5 6; do pgrep -x way-displays >/dev/null 2>&1 && break; sleep 0.25; done
+  sleep 0.5
+}
+
+# --- mirror-mode workspace guard -------------------------------------------
+# wl-mirror duplicates MAIN's pixels, but sway workspaces stay per-output:
+# a `workspace N` issued while focused on EXT (or for an N that already lives
+# on EXT) focuses EXT, so MAIN and the mirror diverge ("ws N only on TV").
+# Fix: consolidate user workspaces onto MAIN, park EXT on a dedicated
+# __mirror workspace (never a number 1-10), and run the event daemon that
+# redirects waybar/gesture/manual switches back to MAIN.
+start_ws_guard() {
+  [ -x "$CONSOLIDATE" ] && "$CONSOLIDATE" --quiet >/dev/null 2>&1 || true
+  if [ -x "$DAEMON" ]; then
+    "$DAEMON" >/dev/null 2>&1 || true   # idempotent: exits if already running
+  fi
+  # Never leave focus on the mirror: all input belongs on MAIN.
+  [ -n "${MAIN:-}" ] && swaymsg focus output "$MAIN" >/dev/null 2>&1 || true
+}
+
+stop_ws_guard() {
+  pkill -f sway-mirror-workspace-daemon 2>/dev/null || true
+  rm -f "${XDG_RUNTIME_DIR:-/tmp}/sway-mirror-workspace-daemon.pid"
+}
+
+mirror_post_on() {  # call after wl-mirror / hardware clone is confirmed up
+  start_ws_guard
+}
+
+mirror_off() {
+  mkdir -p "$(dirname "$FLAG")"
+  touch "$FLAG"
+  if pgrep -x wl-mirror >/dev/null 2>&1; then
+    echo "Stopping wl-mirror..."
+    pkill -x wl-mirror 2>/dev/null || true
+    sleep 0.5
+    pkill -9 -x wl-mirror 2>/dev/null || true
+    sleep 0.3
+  fi
+  stop_ws_guard
+  # Drop the dedicated mirror workspace when it is empty, so no stale
+  # "__mirror" button lingers in waybar's workspace list in extended mode.
+  # (If it holds user windows we leave it alone — it's a real workspace then.)
+  if [ -n "${MAIN:-}" ] && [ -n "${EXT:-}" ] && [ "$EXT" != "$MAIN" ]; then
+    MSTATE=$(swaymsg -t get_tree 2>/dev/null | "$HOME/.local/bin/sway-helper-json" mirror-state)
+    case "$MSTATE" in
+      empty:*)
+        FREE="${MSTATE#empty:}"
+        if [ -n "$FREE" ]; then
+          swaymsg focus output "$EXT" >/dev/null 2>&1
+          swaymsg workspace number "$FREE" >/dev/null 2>&1
+          swaymsg focus output "$MAIN" >/dev/null 2>&1
+        fi
+        ;;
+    esac
+  fi
+  ensure_daemon
+  echo "Mirror: OFF (extended)"
+  notify "Mirror: OFF" "Extended layout restored"
+}
+
+start_software_mirror() {
+  local want_scale="${1:-$SCALING}" b pid ok
+  for b in $BACKENDS; do
+    : > "$LOG"
+    echo "Trying wl-mirror --backend $b ($want_scale) ..."
+    nohup wl-mirror --backend "$b" --scaling "$want_scale" --fullscreen-output "$EXT" "$MAIN" >>"$LOG" 2>&1 9>&- &
+    pid=$!
+    ok=no
+    for _ in 1 2 3; do
+      sleep 0.7
+      kill -0 "$pid" 2>/dev/null || break
+      grep -q '^error' "$LOG" && break
+      ok=$(mirror_ok "$pid")
+      [ "$ok" = yes ] && break
+    done
+    if [ "$ok" = yes ]; then
+      USED_BACKEND="$b"
+      USED_SCALE="$want_scale"
+      return 0
+    fi
+    echo "Backend $b failed: $(head -1 "$LOG")"
+    kill "$pid" 2>/dev/null || true
+    sleep 0.5
+    kill -9 "$pid" 2>/dev/null || true
+    pkill -9 -x wl-mirror 2>/dev/null || true
+    sleep 0.3
+  done
+  return 1
+}
+
+# ------------------------------------------------------------------- main
+# Serialize hotplug/login requests and repeated shortcut presses.
+exec 9>"${XDG_RUNTIME_DIR:-/tmp}/sway-display-mirror.lock"
+flock -n 9 || exit 0
+TSV=$(outputs)
+MAIN="$MAIN_OVERRIDE"
+[ -n "$MAIN" ] || MAIN=$(printf '%s\n' "$TSV" | awk -F'\t' '$2==1 && $1 ~ /^eDP/ {print $1; exit}')
+[ -n "$MAIN" ] || MAIN=$(printf '%s\n' "$TSV" | awk -F'\t' '$2==1 {print $1; exit}')
+EXT="$EXT_OVERRIDE"
+[ -n "$EXT" ] || EXT=$(printf '%s\n' "$TSV" | awk -F'\t' -v m="$MAIN" '$2==1 && $1!=m {print $1; exit}')
+EXT_PRESENT=$(printf '%s\n' "$TSV" | awk -F'\t' -v e="$EXT" '$1==e {print 1; exit}')
+
+IS_MIRROR=no
+if pgrep -x wl-mirror >/dev/null 2>&1; then
+  IS_MIRROR=software
+fi
+
+if [ "$FORCE_OFF" = 1 ] || [ "$IS_MIRROR" != no ]; then
+  [ "$IS_MIRROR" != no ] && echo "Mirror active ($IS_MIRROR) -> extended"
+  mirror_off
+  exit 0
+fi
+
+if [ -z "$EXT" ] || [ -z "${EXT_PRESENT:-}" ]; then
+  echo "No external output"
+  notify "Mirror: no external" "Plug in HDMI / turn the TV on"
+  exit 1
+fi
+
+# Connected but disabled (nwg-displays / way-displays DISABLED): try to wake it up.
+if [ "$(ext_active)" != 1 ]; then
+  echo "$EXT is inactive — enabling it..."
+  swaymsg output "$EXT" enable >/dev/null 2>&1 || true
+  sleep 0.8
+  if [ "$(ext_active)" != 1 ]; then
+    echo "$EXT is still inactive"
+    notify "Mirror: $EXT is off" "Enable it first (nwg-displays / way-displays)"
+    exit 1
+  fi
+fi
+
+# Pre-mirror: pull stray workspaces to MAIN and park EXT on __mirror first,
+# so the wl-mirror window lands in the dedicated workspace instead of
+# squatting a numeric workspace (e.g. ws 5) that blocks user content.
+if [ -x "$CONSOLIDATE" ]; then
+  "$CONSOLIDATE" --force --quiet >/dev/null 2>&1 || true
+  swaymsg focus output "$MAIN" >/dev/null 2>&1 || true
+fi
+
+if [ "$SOFT_ONLY" = 0 ] && fill16x9_capable; then
+  if fill16x9_mirror; then
+    rm -f "$FLAG"
+    mirror_post_on
+    notify "Mirror: ON" "$MAIN fills $EXT at 1920x1080 (wl-mirror, $USED_BACKEND, $USED_SCALE)"
+    exit 0
+  fi
+fi
+
+ensure_daemon
+if start_software_mirror "$SCALING"; then
+  rm -f "$FLAG"
+  mirror_post_on
+  notify "Mirror: ON" "$MAIN duplicated on $EXT (wl-mirror, $USED_BACKEND)"
+  exit 0
+fi
+
+ensure_daemon
+if [ "$(ext_active)" = 1 ]; then
+  echo "Mirror failed — see $LOG"
+  notify "Mirror failed" "wl-mirror could not start, see $LOG"
+else
+  echo "$EXT disappeared while mirroring"
+  notify "Mirror: external lost" "$EXT is no longer connected"
+fi
+exit 2

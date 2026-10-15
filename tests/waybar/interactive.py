@@ -142,6 +142,10 @@ def activate(w):
                               data=(32, [2, 0, 0, 0, 0]))  # 5 x 32 bit = 20 B
     root.send_event(msg, event_mask=X.SubstructureNotifyMask)
     d.sync()
+    # In the isolated headless compositor no physical input serial exists.
+    # Give XWayland an explicit focus request so XTEST targets this test window.
+    w.set_input_focus(X.RevertToParent, X.CurrentTime)
+    d.sync()
     end = time.time() + 2
     while time.time() < end:
         try:
@@ -387,6 +391,7 @@ def main():
     if w is None:
         bad("default-mode panel never mapped", stderr_tail())
     else:
+        time.sleep(0.8)  # exceed the dropdown's initial focus-race grace period
         activate(thief)
         check_exit(p, 1, 0, "default mode still closes on focus loss")
         cleanup(p)
@@ -430,8 +435,10 @@ def main():
               "Return on the Refresh row runs --refresh-cmd exactly once",
               f"refresh starts: {len(ev['refreshes'])}")
     if check_open(p, "Refresh keeps the panel open (no close/reopen flash)"):
-        key("Return")   # selection is back on row 0 -> a freshly loaded item
-        check_exit(p, 0, 3, "the list was repopulated in place", want_prefix="Fresh")
+        time.sleep(0.3)  # let the asynchronous results reach the GTK main loop
+        key("Home")     # refreshed menus preserve their selected row
+        key("Return")
+        check_exit(p, 0, 4, "the list was repopulated in place", want_prefix="Fresh")
     cleanup(p)
 
     print("\n== keyboard selection ==")
@@ -449,6 +456,25 @@ def main():
     key("Down")
     key("Return")
     check_exit(p, 0, 3, "Down Down Enter picks the third row", want_out="Gamma")
+    cleanup(p)
+
+    print("\n== password entry ==")
+    park_pointer()
+    p = launch(["--password", "--stay-open"], [], "password-entry")
+    w = wait_window(p)
+    if w is None:
+        bad("password panel never mapped", stderr_tail())
+    else:
+        activate(w)
+        time.sleep(0.4)
+        for letter in ("a", "b", "c"):
+            key(letter)
+        key("Return")
+        check_exit(p, 0, 4, "password Enter submits entry text", want_out="abc")
+        trace = section_text("password-entry")
+        check("key (password entry)" in trace and "key (97)" not in trace
+              and "key (98)" not in trace and "key (99)" not in trace,
+              "password keystrokes are redacted from debug output", trace)
     cleanup(p)
 
     try:

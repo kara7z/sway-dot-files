@@ -1,0 +1,57 @@
+#!/bin/bash
+# sway-wallpaper-sync — run on every way-displays connect/disconnect callback:
+# put the active (main screen) wallpaper on every connected display.
+#
+# Why this exists: awww restores the image on eDP-1 but gives a newly
+# connected external a flat color. way-displays calls this script after
+# every layout event (see CALLBACK_CMD in cfg.yaml), which detects the
+# ornament-less outputs in `awww query -j` and paints them with the same
+# image the main screen shows.
+#
+# Zero-copy flow: it only ever `awww img`s the *non-main* outputs that are
+# missing an image. eDP-1 itself is never touched (no flicker on the laptop).
+# Set MAIN_OVERRIDE to force which output is the source (default: eDP-*).
+set -u
+
+export SWAYSOCK="${SWAYSOCK:-$(ls /run/user/"$(id -u)"/sway-ipc.* 2>/dev/null | head -1)}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-$(ls "$XDG_RUNTIME_DIR"/wayland-* 2>/dev/null | head -1 | xargs basename)}"
+
+# Serialize: way-displays fires the callback several times per hotplug;
+# wait for the previous run instead of skipping, it may hold fresh state.
+exec 9>"$XDG_RUNTIME_DIR/sway-wallpaper-sync.lock"
+flock 9
+
+main_of() {
+  awww query -j 2>/dev/null | "$HOME/.local/bin/sway-helper-json" wallpaper-source
+}
+
+missing_of() {
+  awww query -j 2>/dev/null | "$HOME/.local/bin/sway-helper-json" wallpaper-missing
+}
+
+TRIES=20
+for _ in $(seq 1 "$TRIES"); do
+  PAIR=$(main_of) || { sleep 1; continue; }
+  MAIN=$(printf '%s' "$PAIR" | sed -n '1p')
+  IMG=$(printf '%s' "$PAIR" | sed -n '2p')
+  sleep 1.5  # let way-displays settle the new mode/pos first
+  mapfile -t NEED < <(missing_of)
+  if ((${#NEED[@]})); then
+    echo "wallpaper-sync: $MAIN -> ${NEED[*]} ($IMG)"
+    if awww img --resize crop "$IMG" -o "$(IFS=,; echo "${NEED[*]}")" >/dev/null 2>&1; then
+      sleep 0.5
+      STILL=$(missing_of)
+      [ -z "$STILL" ] && break
+      echo "wallpaper-sync: $STILL still imageless, retrying"
+      sleep 1
+      continue
+    fi
+    sleep 1
+    continue
+  fi
+  echo "wallpaper-sync: all outputs already have an image"
+  break
+done
+
+exit 0

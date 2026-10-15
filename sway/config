@@ -37,7 +37,7 @@ workspace 5 gaps inner 10
 ### SwayFX eye-candy
 animation_duration_ms 250
 corner_radius 0
-# blur fix: enable globally, disable only for fullscreen windows (keep animation 250ms)
+# Enable blur globally; game-specific rules below disable it for those windows.
 blur enable
 blur_passes 5
 blur_radius 5
@@ -72,7 +72,7 @@ client.urgent      #ff0000     #ff0000     #ffffff      #ff0000      #ff0000
 # Tune the timeouts inside ~/.local/bin/sway-idle-lock.
 exec_always ~/.local/bin/sway-idle-lock
 
-# Keep Nautilus warm so Mod+Super+E opens its first window without the cold
+# Keep Nautilus warm so Super+E opens its first window without the cold
 # application and Tracker startup delay. Its D-Bus service opens windows on demand.
 exec nautilus --gapplication-service
 
@@ -85,13 +85,18 @@ exec nautilus --gapplication-service
 # pauses *both* timers only while that view is fullscreen and visible; windowed
 # games / desktop still lock after 5 min, `before-sleep` is untouched.
 # (man 5 sway: focus=on focus, fullscreen=only when fullscreen+visible).
-for_window [class="^steam_app_"]    inhibit_idle fullscreen   # Steam + Proton games (XWayland)
-for_window [app_id="^steam_app_"]   inhibit_idle fullscreen   # Steam games (native Wayland)
-for_window [class="^steam$"]        inhibit_idle fullscreen   # Steam client / Big Picture
-for_window [class="[.]exe$"]        inhibit_idle fullscreen   # Wine/Proton exe windows
+# Steam + Proton games (XWayland)
+for_window [class="^steam_app_"]    inhibit_idle fullscreen
+# Steam games (native Wayland)
+for_window [app_id="^steam_app_"]   inhibit_idle fullscreen
+# Steam client / Big Picture
+for_window [class="^steam$"]        inhibit_idle fullscreen
+# Wine/Proton exe windows
+for_window [class="[.]exe$"]        inhibit_idle fullscreen
 for_window [class="^gamescope"]     inhibit_idle fullscreen
 for_window [app_id="^gamescope"]    inhibit_idle fullscreen
-for_window [class="^[Mm]inecraft"]  inhibit_idle fullscreen   # Minecraft (XWayland)
+# Minecraft (XWayland)
+for_window [class="^[Mm]inecraft"]  inhibit_idle fullscreen
 for_window [app_id="^[Mm]inecraft"] inhibit_idle fullscreen
 for_window [class="^[Ll]utris"]     inhibit_idle fullscreen
 for_window [class="^[Hh]eroic"]     inhibit_idle fullscreen
@@ -99,7 +104,7 @@ for_window [class="^[Hh]eroic"]     inhibit_idle fullscreen
 for_window [all] inhibit_idle fullscreen
 # for_window only hits new windows: re-apply to existing views on each reload
 # (old terminals kept user=none and still locked fullscreen — seen 2026-09-28).
-exec_always --no-startup-id swaymsg '[all] inhibit_idle fullscreen' >/dev/null 2>&1
+exec_always --no-startup-id swaymsg '[all] inhibit_idle fullscreen; [app_id="^at[.]yrlf[.]wl_mirror$"] inhibit_idle none' >/dev/null 2>&1
 
 # Same guard driven by real gamepad input — covers games whose class/app_id is
 # not listed above (reads the pads itself, holds/clears `inhibit_idle fullscreen`
@@ -114,13 +119,18 @@ exec_always --no-startup-id ~/.local/bin/sway-gamepad-idle-guard
 # possible fullscreen here: per-window blur off on Steam/Proton views. This
 # follows the existing SwayFX comment below (blur on globally, but fullscreen
 # must not pay for it); the rest of the desktop keeps its blur.
-for_window [class="^steam_app_"]    blur disable   # Steam + Proton games (XWayland)
-for_window [app_id="^steam_app_"]   blur disable   # Steam games (native Wayland)
-for_window [class="^steam$"]        blur disable   # Steam client / Big Picture
-for_window [class="[.]exe$"]        blur disable   # Wine/Proton exe windows
+# Steam + Proton games (XWayland)
+for_window [class="^steam_app_"]    blur disable
+# Steam games (native Wayland)
+for_window [app_id="^steam_app_"]   blur disable
+# Steam client / Big Picture
+for_window [class="^steam$"]        blur disable
+# Wine/Proton exe windows
+for_window [class="[.]exe$"]        blur disable
 for_window [class="^gamescope"]     blur disable
 for_window [app_id="^gamescope"]    blur disable
-for_window [class="^[Mm]inecraft"]  blur disable   # Minecraft (XWayland)
+# Minecraft (XWayland)
+for_window [class="^[Mm]inecraft"]  blur disable
 for_window [app_id="^[Mm]inecraft"] blur disable
 for_window [class="^[Ll]utris"]     blur disable
 for_window [class="^[Hh]eroic"]     blur disable
@@ -146,13 +156,10 @@ input type:keyboard {
 
 #startup application
 
-exec_always bash -c 'pkill awww-daemon; sleep 0.2; awww-daemon'
-# awww owns the wallpaper. A stray argument-less `swaybg` (which paints the whole
-# output solid RED) is started again by something in the session on every
-# `swaymsg reload` (seen repeatedly 2026-09-25, origin not found in this config
-# or in any script); drop it after the reload settles so the wallpaper stays
-# visible. Ordered after the awww line, delayed so it also catches late spawns.
-exec_always --no-startup-id bash -c 'sleep 2; pkill -x swaybg 2>/dev/null; true'
+# awww owns the wallpaper. Disable Sway's built-in swaybg launcher and keep
+# the existing awww daemon on reload; start it only if its IPC is unavailable.
+swaybg_command -
+exec_always sh -c 'awww query >/dev/null 2>&1 || exec awww-daemon'
 # Discord: start at session login. The pgrep guard means a config reload
 # (Alt+Shift+C) no longer launches a second instance / re-opens the window.
 exec --no-startup-id bash -c 'pgrep -ix discord >/dev/null || discord &'
@@ -183,7 +190,7 @@ bindgesture swipe:3:right exec ~/.local/bin/workspace-swipe prev
     # Start your launcher
     bindsym $mod+d exec $menu
 
-    bindsym $mod+SHIFT+r exec "pkill waybar && waybar &" 
+    bindsym $mod+Shift+r exec sh -c 'pkill -x waybar; exec waybar'
     # Drag floating windows by holding down $mod and left mouse button.
     # Resize them with right mouse button + $mod.
     # Despite the name, also works for non-floating windows.
@@ -347,7 +354,7 @@ bindsym $mod+r mode "resize"
     # The script keeps the first wl-mirror backend that survives 1s:
     # extcopy-shm -> screencopy-shm -> auto (SHM is required while eDP-1 is
     # 10-bit: render_bit_depth 10 breaks the DMA-BUF/GL import on this iGPU).
-    # A true hardware clone is used only if the external advertises 1920x1200.
+    # Uses wl-mirror; overlapping output positions do not clone Sway workspaces.
     bindsym $mod+p exec ~/.local/bin/sway-display-toggle
     # Also on Super+P ($mod2 = Mod4): $mod is Mod1 (Alt) here, so this makes
     # "mod+p" work whichever modifier your fingers reach for.
@@ -379,7 +386,7 @@ exec way-displays > /tmp/way-displays.${XDG_VTNR}.${USER}.log 2>&1
 # covered by way-displays CALLBACK_CMD). Clears any manual-off from last session.
 exec bash -c 'rm -f "${XDG_CACHE_HOME:-$HOME/.cache}/sway-mirror-manual-off"; ~/.local/bin/sway-display-mirror-ensure >> /tmp/wl-mirror-ensure.log 2>&1'
 
-for_window [title="Password for .*"] floating enable, border pixel 1, border white, move position center
+for_window [title="Password for .*"] floating enable, border pixel 1, move position center
 
 # way-displays owns modes/positions/scales now (see exec way-displays above).
 # nwg-displays outputs file disabled to avoid fighting the daemon.
@@ -389,7 +396,7 @@ include ~/.config/sway/workspaces
 include /etc/sway/config.d/*
 
 # --- SwayFX: preserve blur animation (250ms) but prevent wallpaper-only on workspace switch ---
-# Re-enable blur globally (overrides blur disable from /etc/sway/config)
+# Final global blur settings after the config.d includes.
 blur enable
 blur_xray disable
 blur_passes 5
@@ -435,8 +442,9 @@ output eDP-1 scale_filter smart
 # EXT) shows ONLY on the external. The wrapper (~/.local/bin/sway-workspace) +
 # event daemon (sway-mirror-workspace-daemon) pull stray workspaces back to
 # MAIN (eDP-*) and park the external on the dedicated __mirror workspace.
-# NOTE: no static `workspace N output ...` pinning here on purpose — it would
-# also force new workspaces onto the laptop in extended (non-mirror) mode.
+# Workspace 1 is pinned by the included workspaces file; other workspaces
+# stay unpinned so extended mode can create them on either output.
 # wl-mirror window: no border, never auto-focuses away from MAIN content.
-for_window [app_id="at.yrlf.wl_mirror"] border none
-no_focus [app_id="at.yrlf.wl_mirror"]
+# The mirror stays fullscreen even on an idle desktop: it must not block locking.
+for_window [app_id="^at[.]yrlf[.]wl_mirror$"] border none, inhibit_idle none
+no_focus [app_id="^at[.]yrlf[.]wl_mirror$"]

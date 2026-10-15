@@ -16,10 +16,12 @@ wmenu
 awww
 waypaper
 nwg-displays
+way-displays
 # Terminal + files + browser
 kitty
 nautilus
 firefox
+discord
 # Audio / brightness / media
 pavucontrol
 pipewire-pulse
@@ -49,13 +51,10 @@ swappy
 wl-mirror
 jq
 wl-clipboard
-# Python / libs for waybar scripts
-python
-python-gobject
-python-xlib
-python-pydbus
+# Native libraries for Rust GTK Waybar helpers.
 gtk3
 gtk-layer-shell
+libx11
 libnotify
 # Fonts + cursor (required for waybar/style.css + sway cursor)
 ttf-firacode-nerd
@@ -66,6 +65,9 @@ noto-fonts-emoji
 procps-ng
 psmisc
 qt6ct
+# Build the native Sway helpers (Cargo is included in Arch's rust package).
+rust
+base-devel
 
 # --- AUR (yay/paru) ---
 scenefx-git

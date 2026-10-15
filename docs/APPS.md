@@ -1,99 +1,55 @@
-# Apps — Sway Keybindings & Waybar
+# Sway applications and helpers
 
-## Sway `sway/config:105` — 30 `exec` bindings
+The current keybinding table is in [README.md](../README.md). The complete
+configuration is [sway/config](../sway/config); `$mod` is Alt and `$mod2` is Super.
 
-### Variables `sway/config:19`
-| Var | Value |
-|-----|-------|
-| `$term` | `kitty:19` |
-| `$browser` | `firefox:21` |
-| `$DisplayManager` | `nwg-displays:23` |
-| `$menu` | `wmenu-run:24` |
-| `$Files` | `nautilus:25` |
-| `$Bluetooth` | `blueman-applet:27` |
+## Startup
 
-### `bindsym ... exec` (28)
+Sway starts Waybar, SwayNC, way-displays, Blueman, Discord, the authentication
+agent, battery notifications, and Nautilus's background service at login.
+Reloads refresh theme settings and the single-instance idle/gamepad helpers.
+The wallpaper daemon starts only if its IPC is unavailable, preserving wallpaper
+state through reloads. The optional game-freeze daemon is disabled at startup.
 
-| Binding | Command | App |
-|---------|---------|-----|
-| `$mod+Return:110` | `exec $term` | kitty |
-| `$mod2+d:111` | `exec nwg-displays` | nwg-displays |
-| `$mod2+b:112` | `exec firefox` | firefox |
-| `$mod2+w:113` | `exec waypaper` | waypaper |
-| `$mod2+e:114` | `exec nautilus` | nautilus |
-| `$mod2+l:196` | `exec ~/.local/bin/sway-lock` | sway-lock (classic wallpaper lock, same as idle/before-sleep) |
-| `$mod2+g:199` | `exec ~/.local/bin/sway-game-unstick` | unstick a frozen fullscreen game (fullscreen off/on on focused window) |
-| `$mod+d:118` | `exec wmenu-run` | wmenu |
-| `$mod+Shift+r:120` | `pkill waybar && waybar &` | waybar |
-| `$mod2+space:132` | `swaymsg input type:keyboard xkb_switch_layout next` | swaymsg |
-| `$mod+Shift+e:135` | `swaynag -m ... 'swaymsg exit'` | swaynag |
-| `XF86AudioMute:252` | `pactl set-sink-mute @DEFAULT_SINK@ toggle` | pactl (pulse/pipewire) |
-| `XF86AudioLowerVolume:253` | `pactl set-sink-volume ... -5%` | pactl |
-| `XF86AudioRaiseVolume:254` | `pactl set-sink-volume ... +5%` | pactl |
-| `XF86AudioMicMute:255` | `pactl set-source-mute @DEFAULT_SOURCE@ toggle` | pactl |
-| `XF86AudioPlay/Pause:258` | `playerctl play-pause` | playerctl |
-| `XF86AudioPrev:260` | `playerctl previous` | playerctl |
-| `XF86AudioNext:261` | `playerctl next` | playerctl |
-| `XF86AudioStop:262` | `playerctl stop` | playerctl |
-| `XF86MonBrightnessDown:265` | `~/.local/bin/sway-brightness down` — 2% step, 1% floor | custom script (brightnessctl) |
-| `XF86MonBrightnessUp:266` | `~/.local/bin/sway-brightness up` — 2% step, 100% cap | custom script (brightnessctl) |
-| `$mod+p:271` | `~/.local/bin/sway-display-toggle` — duplicate (mirror) the main screen on the external | custom script |
-| `XF86Display:276` | `sway-display-toggle` (same duplicate toggle) |  |
-| `XF86DisplayToggle:277` | `sway-display-toggle` (same duplicate toggle) |  |
-| `XF86Fn_F6/8:276` | `nwg-displays` |  |
-| `Print:280` | `grim` | grim |
-| `swipe:3:left:100` | `~/.local/bin/workspace-swipe next` | custom |
-| `swipe:3:right:101` | `workspace-swipe prev` |  |
+way-displays uses [cfg.yaml](../way-displays/cfg.yaml) to manage output modes and
+positions. Its callbacks synchronize wallpaper and ensure mirroring, unless the
+user has turned mirroring off. The old nwg-displays outputs include is disabled.
 
-### Startup `exec` (`sway/config:98`)
-| Line | App |
-|------|-----|
-| `98` `exec_always bash -c 'pkill awww-daemon; sleep 0.2; awww-daemon'` | awww-daemon (wallpaper) |
-| `99` `exec --no-startup-id blueman-applet` | blueman-applet |
-| `286` `exec waybar` | waybar |
-| `287` `exec swaync` | swaync |
-| `307` `exec systemctl --user set-environment QT_QPA_PLATFORMTHEME=qt6ct` | qt6ct |
+## Sway helpers
 
-### Scripts in `scripts/`
-| Script | Purpose |
-|--------|---------|
-| `sway-display-toggle` | `$mod+p` duplicate: hardware clone when the external advertises the laptop's mode, otherwise `wl-mirror` fullscreen on it; first working backend wins (`extcopy-shm` -> `screencopy-shm` -> `auto` — SHM is required while eDP-1 is 10-bit, `render_bit_depth 10` breaks the DMA-BUF/GL capture); stops/restarts way-displays as needed; notify |
-| `sway-wl-mirror-toggle` | legacy alias -> `sway-display-toggle --software-only` |
-| `sway-mirror-1080p` | legacy alias -> `sway-display-toggle --software-only` (eDP-1 exposes no 1080p mode, so a real 1080p clone is impossible) |
-| `workspace-swipe` | `current=$(swaymsg -t get_workspaces | jq ...)`, +1/-1 |
-| `sway-battery-notify` | warn once at 15%, critical (sticky, repeat 2min) at 5% while Discharging — autostarted from `sway/config` |
-| `sway-idle-lock` | keeps exactly one `swayidle`: lock after 5 min (`swaylock` + current wallpaper), outputs off after 10 min, lock before sleep — autostarted from `sway/config:69` |
-| `sway-gamepad-idle-guard` | reads the joystick evdev devices (`input` group) and holds/clears `inhibit_idle focus` on the focused view while the pad is really used (release after 300 s of silence) so `swayidle` cannot lock mid-game — autostarted from `sway/config:71` |
-| `sway-lock` | runs the classic lock screen (`swaylock -f -i <current-wallpaper> -s fill`, black fallback); used by the `Super+L` binding (`sway/config:196`) and by `swayidle` (idle + before-sleep); `--dry-run`, `--print-wallpaper`, flock + pgrep guard against stacked locks |
-| `sway-game-unstick` | unfreezes a frozen fullscreen game view by toggling fullscreen off/on on the focused window (`Super+G`, `sway/config:199`); only touches the focused container, never touches the game process; `--dry-run` |
-| `sway-game-freeze-daemon` | auto-watchdog daemon that detects stalled frame presentation in fullscreen games during gameplay and unfreezes them automatically in background; autostarted from `sway/config:98` |
-| `sway/scripts/workspace-fade.sh` | fake fade `dpms off / workspace N / dpms on` |
-| `sway/status.sh` | legacy swaybar JSON (wifi `nmcli`, vol `pactl`, bat `/sys/.../BAT0`) — **inactive**, uses waybar now; its wifi click opens the sibling `sway/wifi-menu.sh` |
-| `sway/wifi-menu.sh` | `nmcli rescan | wofi` — legacy, replaced by `waybar/wifi_menu.sh`; prompts for the password on secured networks |
+| Command | Implementation | Purpose |
+|---------|----------------|---------|
+| `sway-display-toggle` | Shell + Rust JSON helper | Toggle actual wl-mirror mirroring; serialize with hotplug callbacks |
+| `sway-display-mirror-ensure` | Shell + Rust JSON helper | Start the mirror at login/hotplug, respecting manual-off state |
+| `sway-wallpaper-sync` | Shell + Rust JSON helper | Apply the current wallpaper to outputs missing an image |
+| `sway-workspace` | Rust | Execute workspace switch/move while preserving named workspace numbering |
+| `sway-mirror-workspaces` | Rust | Keep the mirror on its dedicated workspace and normal windows on the main output |
+| `sway-mirror-workspace-daemon` | Rust | Enforce the mirror layout on Sway events; no focus changes for stable layouts |
+| `sway-gamepad-idle-guard` | Rust | Read evdev activity; acquire/release inhibitors without stealing existing ones |
+| `sway-game-freeze-daemon` | Rust, optional | Heuristic fullscreen presentation recovery; disabled at startup |
+| `sway-helper-json` | Rust | Parse output modes, tree/mirror state, and wallpaper paths |
+| `sway-game-unstick` | Shell | Manual recovery preserving ordinary/global fullscreen; Super+g |
+| `sway-idle-lock` | Shell | One swayidle: lock after 5 min, outputs off after 10 min, lock before sleep |
+| `sway-lock` | Shell | Current-wallpaper lock with a single-instance guard; supports `--dry-run` |
+| `sway-brightness` | Shell | Brightness changes in 2% steps, bounded to 1%–100% |
+| `workspace-swipe` | Shell | Previous/next numbered workspace; skip unnumbered workspaces |
+| `sway-battery-notify` | Shell | Low/critical battery notifications |
+| `sway-wl-mirror-toggle`, `sway-mirror-1080p` | Shell | Compatibility aliases for the display toggle |
 
-## Waybar Modules & Their Apps `waybar/config:9`
+The Sway commands are built from [rust/sway-helpers](../rust/sway-helpers), then
+installed under their original command names. Waybar's native menu/media
+commands are built from [rust/waybar-helpers](../rust/waybar-helpers).
 
-| Module | App / Command | Lines |
-|--------|---------------|-------|
-| `sway/workspaces` | sway IPC | 30 |
-| `sway/mode` | sway | 44 |
-| `sway/scratchpad` | sway | 47 |
-| `clock` | swaybar clock | 95 |
-| `custom/notification` | `swaync-client -swb -t -d -C` | 197 |
-| `tray` | `blueman` etc. tray icons | 87 |
-| `mpd` | `mpd` + `playerctl` icons | 54 |
-| `pulseaudio` | `pavucontrol` click | 160 |
-| `custom/kblayout` | `swaymsg get_inputs` via `kblayout.sh` | 191 |
-| `network` | `nmcli` via `wifi_menu.sh` → anchored dropdown | 150 |
-| `power-profiles-daemon` | `powerprofilesctl` | 139 |
-| `backlight` | `brightnessctl` | 115 |
-| `battery` | `/sys/class/power_supply/BAT0` | 123 |
-| `custom/power` | `power_menu.sh` → anchored dropdown (`waybar-dropdown`) + `systemctl` | 218 |
-| *(unused)* `cpu` `memory` `temperature` | `cpu/memory/temp` | 100/104/107 |
-| *(unused)* `custom/media` | `mediaplayer.py` → `playerctl` | 179 |
+## Waybar and legacy utilities
 
-## Dependency Checklist
+Waybar uses `swaync-client`, `pavucontrol`, `nmcli`, `powerprofilesctl`,
+`brightnessctl`, `playerctl`, and the GTK `waybar-dropdown` helper. See
+[WAYBAR_MODULES.md](WAYBAR_MODULES.md) for module details.
 
-From `deps/pacman.txt` + manual:
-`swayfx-git scenefx-git waybar swaync swaybg swayidle swaylock wofi wmenu grim wl-mirror awww kitty nautilus nwg-displays waypaper blueman brightnessctl playerctl pavucontrol pipewire-pulse networkmanager python-gobject gtk-layer-shell jq wl-clipboard libnotify power-profiles-daemon`
-Fonts: `ttf-firacode-nerd otf-font-awesome`, cursor `Bibata-Modern-Ice:29`
+`sway/status.sh`, `sway/wifi-menu.sh`, and `sway/scripts/workspace-fade.sh` are
+legacy files, installed for compatibility and not enabled by the main config.
+The legacy workspace fade briefly powers outputs off and should not be used as
+a replacement for native SwayFX animations.
+
+Dependencies are listed in [deps/pacman.txt](../deps/pacman.txt). The installer
+builds Rust helpers before replacing configuration and never launches applications.

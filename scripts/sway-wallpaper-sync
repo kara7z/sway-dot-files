@@ -23,44 +23,11 @@ exec 9>"$XDG_RUNTIME_DIR/sway-wallpaper-sync.lock"
 flock 9
 
 main_of() {
-  awww query -j 2>/dev/null | python3 -c '
-import json, os, sys
-try:
-    d = json.load(sys.stdin)
-except Exception:
-    sys.exit(1)
-pref = os.environ.get("MAIN_OVERRIDE", "")
-outs = [o for outs in d.values() for o in outs]
-found = None
-for o in outs:
-    if pref and o.get("name") == pref and (o.get("displaying") or {}).get("image"):
-        found = o
-        break
-if found is None:
-    for o in outs:
-        if o.get("name", "").startswith("eDP-") and (o.get("displaying") or {}).get("image"):
-            found = o
-            break
-if found is None:
-    sys.exit(1)
-print(found["name"])
-print(found["displaying"]["image"])
-'
+  awww query -j 2>/dev/null | "$HOME/.local/bin/sway-helper-json" wallpaper-source
 }
 
 missing_of() {
-  awww query -j 2>/dev/null | python3 -c '
-import json, sys
-try:
-    d = json.load(sys.stdin)
-except Exception:
-    sys.exit(1)
-outs = [o for outs in d.values() for o in outs]
-got = [o["name"] for o in outs if (o.get("displaying") or {}).get("image")]
-for o in outs:
-    if o.get("name") not in got:
-        print(o["name"])
-'
+  awww query -j 2>/dev/null | "$HOME/.local/bin/sway-helper-json" wallpaper-missing
 }
 
 TRIES=20

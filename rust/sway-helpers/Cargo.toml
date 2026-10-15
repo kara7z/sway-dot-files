@@ -1,0 +1,12 @@
+[package]
+name = "sway-helpers"
+version = "1.0.0"
+edition = "2024"
+
+[dependencies]
+serde_json = "=1.0.151"
+libc = "=0.2.189"
+
+[profile.release]
+lto = true
+strip = true

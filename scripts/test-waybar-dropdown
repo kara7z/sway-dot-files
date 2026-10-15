@@ -1,6 +1,6 @@
 #!/bin/sh
 # Self-checks for ~/.local/bin/waybar-dropdown and the waybar menu scripts.
-# Needs a running X server (XWayland under sway is enough) plus xdotool + xterm.
+# Headless checks: dry-run JSON and stub menus/network/device commands.
 # Usage: test-waybar-dropdown [-v]
 set -u
 BIN="${BIN:-$HOME/.local/bin/waybar-dropdown}"
@@ -22,11 +22,7 @@ chk() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (want '$3', got '$2')"; f
 
 # json <file> <dotted.path>  ->  value of that key (nested dicts via a.b)
 json() {
-    python3 -c 'import json,sys
-d=json.load(open(sys.argv[1]))
-for k in sys.argv[2].split("."):
-    d=d[k]
-print(d)' "$1" "$2" 2>/dev/null
+    jq -r --arg key "$2" 'getpath($key|split(".")) | if . == null then "None" elif type == "boolean" then (if . then "True" else "False" end) else . end' "$1" 2>/dev/null
 }
 
 # dry <outfile> <items|''> <args...>   (--dry-run, resolved config to outfile)
@@ -106,6 +102,18 @@ reject "--refocus without --stay-open" --refocus
 # never touch the lock of a menu that is really open on the desktop.
 export MENU_LOCK=/tmp/dd-menu.lock
 rm -rf "$MENU_LOCK"
+FAKEBIN=$(mktemp -d /tmp/dd-fakebin.XXXXXX)
+trap 'rm -rf "$FAKEBIN"' EXIT
+cat > "$FAKEBIN/nmcli" <<'NMEOF'
+#!/bin/sh
+case "$*" in
+  *active,ssid,signal,security*) printf 'yes:Rust Test WiFi:85:WPA2\nno:Other WiFi:40:WPA2\n' ;;
+  *) exit 1 ;;
+esac
+NMEOF
+chmod +x "$FAKEBIN/nmcli"
+PATH="$FAKEBIN:$PATH"
+export PATH
 printf '\n== single instance / lock ==\n'
 STUB=/tmp/dd-stub-dropdown
 cat > "$STUB" <<'STUBEOF'
@@ -142,7 +150,7 @@ lock_test() {   # lock_test <script> <lock-dir> <has-list-mode: yes|no>
     if [ "$haslist" = yes ]; then
         nets=$(sh "$script" --list no 2>/dev/null | grep -c .)
         if [ "$nets" -gt 0 ]; then ok "list mode works while locked ($nets networks)"; else bad "list mode blocked by the lock"; fi
-        grep -q -- '--anchor-edge bottom' /tmp/dd-stub-args-1 && ok "menu anchored above the bar (bottom edge)" || bad "menu not anchored above the bar"
+        grep -q -- '--anchor-edge top' /tmp/dd-stub-args-1 && ok "menu anchored below the top bar" || bad "menu not anchored below the top bar"
         grep -q 'stay-open' /tmp/dd-stub-args-1 && ok "menu requested stay-open" || bad "menu missing stay-open"
         grep -q -- '--anchor-x 1608' /tmp/dd-stub-args-1 && ok "menu anchored at the wifi button (x=1608)" || bad "menu not anchored at the wifi button"
         grep -q 'refresh-cmd' /tmp/dd-stub-args-1 && ok "menu offers a refresh row" || bad "menu missing refresh row"
@@ -172,8 +180,6 @@ lock_test "$MENUS/kblayout_menu.sh" "$MENU_LOCK" no
 
 # kblayout_menu.sh must really switch layouts: run it with a stub dropdown (the
 # row it "chooses") and a fake swaymsg that records the switch command.
-FAKEBIN=/tmp/dd-fakebin
-mkdir -p "$FAKEBIN"
 cat > "$FAKEBIN/swaymsg" <<'FAKEEOF'
 #!/bin/sh
 if [ "$1" = "input" ]; then
@@ -230,9 +236,9 @@ DROPDOWN=$STUB STUB_SLEEP=0 STUB_ARGS=/tmp/dd-stub-args-6 \
 grep -q -- '--anchor-x 1446' /tmp/dd-stub-args-6 \
     && ok "layout menu anchored at the layout button (x=1446)" \
     || bad "layout menu not anchored at the layout button"
-grep -q -- '--anchor-edge bottom' /tmp/dd-stub-args-6 \
-    && ok "layout menu anchored above the bar (bottom edge)" \
-    || bad "layout menu not anchored above the bar"
+grep -q -- '--anchor-edge top' /tmp/dd-stub-args-6 \
+    && ok "layout menu anchored below the top bar" \
+    || bad "layout menu not anchored below the top bar"
 grep -q 'stay-open' /tmp/dd-stub-args-6 \
     && ok "layout menu requested stay-open" \
     || bad "layout menu missing stay-open"
