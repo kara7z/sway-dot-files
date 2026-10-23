@@ -58,28 +58,20 @@ ask_password() {
 # build_list <rescan: no|yes> — prints "✓ 󰤨  84%  SSID" lines, the active
 # network first and then by signal. Runs in the dropdown's background worker.
 build_list() {
-    networks=$(nmcli -t -f active,ssid,signal,security dev wifi list --rescan "$1" 2>/dev/null) || return $?
+    # Put the unescaped SSID last: colons/backslashes belong to its name,
+    # not to the fixed metadata columns. Keep spaces and percent signs too.
+    networks=$(LC_ALL=C nmcli -t -e no -f active,signal,security,ssid dev wifi list --rescan "$1" 2>/dev/null) || return $?
     printf '%s\n' "$networks" \
       | grep -v '^[[:space:]]*$' \
-      | sort -t: -k1,1r -k3,3rn \
-      | awk -F: '!seen[$2]++ && $2 != ""' \
-      | while IFS=: read -r active ssid signal security; do
-        sig=$((signal))
-        if [ "$sig" -ge 75 ]; then
-            icon="󰤨"
-        elif [ "$sig" -ge 50 ]; then
-            icon="󰤥"
-        elif [ "$sig" -ge 25 ]; then
-            icon="󰤢"
-        else
-            icon="󰤟"
-        fi
-        if [ "$active" = "yes" ]; then
-            printf "\u2713 %s  %s%%  %s\n" "$icon" "$signal" "$ssid"
-        else
-            printf "  %s  %s%%  %s\n" "$icon" "$signal" "$ssid"
-        fi
-      done
+      | sort -t: -k1,1r -k2,2rn \
+      | awk -F: '{
+          ssid = $0
+          sub(/^[^:]*:[^:]*:[^:]*:/, "", ssid)
+          if (ssid == "" || seen[ssid]++) next
+          signal = $2 + 0
+          icon = signal >= 75 ? "󰤨" : signal >= 50 ? "󰤥" : signal >= 25 ? "󰤢" : "󰤟"
+          printf "%s %s  %s%%  %s\n", ($1 == "yes" ? "✓" : " "), icon, $2, ssid
+        }'
 }
 
 # List-only mode runs before the lock on purpose: the dropdown's Refresh row
@@ -119,7 +111,7 @@ if ! mkdir "$LOCK" 2>/dev/null; then
     if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
         # Still our own launcher (comm check guards against PID reuse)
         case "$(cat "/proc/$old_pid/comm" 2>/dev/null)" in
-            sh|bash|dash)
+            sh|bash|dash|wifi_menu.sh|power_menu.sh)
                 close_running_menu
                 # same button: that click meant "close it", so we are done
                 [ "$old_kind" = "$MENU_KIND" ] && exit 0
@@ -148,7 +140,7 @@ chosen=$(run_dropdown --anchor-x "$WIFI_ANCHOR_X" \
 
 iface=$(nmcli -t -f DEVICE,TYPE device status 2>/dev/null | grep ':wifi$' | cut -d: -f1 | head -1)
 [ -z "$iface" ] && exit 0
-current=$(nmcli -t -f active,ssid dev wifi list --rescan no 2>/dev/null | grep '^yes:' | cut -d: -f2)
+current=$(LC_ALL=C nmcli -t -e no -f active,ssid dev wifi list --rescan no ifname "$iface" 2>/dev/null | sed -n 's/^yes://p' | head -1)
 
 # Rows look like "✓ 󰤨  84%  MySSID" — the SSID starts after the first run of
 # spaces that follows the signal percentage (an SSID may itself contain '%').
@@ -167,11 +159,11 @@ if [ "$ssid" = "$current" ]; then
     exit 0
 fi
 
-# Raw AP list (active:SSID:signal:security). Needed to read the SSID's security
-# below; without it every network looks open and no password is ever requested.
-wifi=$(nmcli -t -f active,ssid,signal,security dev wifi 2>/dev/null)
-security=$(printf '%s\n' "$wifi" | grep -F ":${ssid}:" | head -1 | awk -F: '{print $NF}' | xargs)
-saved=$(nmcli -t -f name connection show 2>/dev/null | grep -Fx "$ssid")
+# Match the complete unescaped SSID, including embedded colons/backslashes.
+# ENVIRON avoids awk interpreting backslash sequences in a -v assignment.
+wifi=$(LC_ALL=C nmcli -t -e no -f security,ssid dev wifi list --rescan no ifname "$iface" 2>/dev/null)
+security=$(printf '%s\n' "$wifi" | WIFI_SSID="$ssid" awk -F: 'substr($0, index($0, ":") + 1) == ENVIRON["WIFI_SSID"] { print $1; exit }')
+saved=$(nmcli -t -e no -f name connection show 2>/dev/null | grep -Fx -- "$ssid")
 
 if [ -n "$security" ] && [ "$security" != "--" ]; then
     # Secured network -------------------------------------------------------

@@ -58,7 +58,7 @@ if ! mkdir "$LOCK" 2>/dev/null; then
     if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
         # Still our own launcher (comm check guards against PID reuse)
         case "$(cat "/proc/$old_pid/comm" 2>/dev/null)" in
-            sh|bash|dash)
+            sh|bash|dash|wifi_menu.sh|power_menu.sh)
                 close_running_menu
                 # same button: that click meant "close it", so we are done
                 [ "$old_kind" = "$MENU_KIND" ] && exit 0

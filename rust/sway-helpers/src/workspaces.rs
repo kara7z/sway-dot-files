@@ -8,6 +8,7 @@ use std::{
 };
 
 pub const MIRROR_APP: &str = "at.yrlf.wl_mirror";
+pub const MIRROR_TITLE_PREFIX: &str = "Sway mirror: ";
 pub fn mirror_name() -> String {
     env::var("SWAY_MIRROR_WS").unwrap_or_else(|_| "__mirror".into())
 }
@@ -53,6 +54,22 @@ pub fn mirror_on(tree: &Value) -> bool {
     nodes(tree).into_iter().any(is_mirror)
 }
 
+// Record both selected outputs in the title. The actual output ancestor can
+// change on unplug, so it cannot tell us the intended destination.
+pub fn mirror_pair_from_tree(tree: &Value) -> Option<(String, String)> {
+    for view in nodes(tree).into_iter().filter(|n| is_mirror(n)) {
+        if let Some(pair) = text(view, "name").strip_prefix(MIRROR_TITLE_PREFIX)
+            && let Some((source, target)) = pair.split_once(" -> ")
+            && !source.is_empty()
+            && !target.is_empty()
+            && source != target
+        {
+            return Some((source.into(), target.into()));
+        }
+    }
+    None
+}
+
 // Plan first: this makes stable layouts a no-op and allows fixture tests.
 pub fn plan(
     outputs: &Value,
@@ -63,6 +80,17 @@ pub fn plan(
     ext: &str,
     mirror: &str,
 ) -> Vec<String> {
+    let recorded = mirror_pair_from_tree(tree);
+    let main = if main.is_empty() {
+        recorded.as_ref().map(|p| p.0.as_str()).unwrap_or(main)
+    } else {
+        main
+    };
+    let ext = if ext.is_empty() {
+        recorded.as_ref().map(|p| p.1.as_str()).unwrap_or(ext)
+    } else {
+        ext
+    };
     let Some((main, ext)) = output_pair(outputs, main, ext) else {
         return vec![];
     };
@@ -173,7 +201,14 @@ pub fn consolidate(args: &[String]) -> Result<()> {
 }
 pub fn daemon(args: &[String]) -> Result<()> {
     if args.iter().any(|a| a == "--help" || a == "-h") {
-        println!("sway-mirror-workspace-daemon [--foreground] [--once] [--dry-run]");
+        println!("sway-mirror-workspace-daemon [--foreground] [--once] [--dry-run] [--stop]");
+        return Ok(());
+    }
+    if args == ["--stop"] {
+        // Take over only our runtime-directory instance, checking its PID and
+        // command line. Wait for it to release the lock before returning.
+        let _lock = Instance::acquire("sway-mirror-workspace-daemon", true, None)?
+            .ok_or("workspace daemon did not stop")?;
         return Ok(());
     }
     if args
@@ -284,5 +319,19 @@ mod tests {
             p[0],
             "workspace \"dev; exit\"; move workspace to output \"eDP-1\""
         );
+    }
+    #[test]
+    fn selected_mirror_pair_wins_over_first_external() {
+        let outs = json!([{"name":"eDP-1","active":true},
+            {"name":"DP-1","active":true},{"name":"HDMI-A-1","active":true}]);
+        let tree = json!({"type":"output","name":"HDMI-A-1","nodes":[
+            {"type":"workspace","name":"__mirror","nodes":[
+                {"id":7,"app_id":MIRROR_APP,"name":"Sway mirror: DP-1 -> HDMI-A-1"}]}]});
+        let ws = json!([{"name":"1","output":"DP-1","focused":true},
+            {"name":"__mirror","output":"HDMI-A-1","visible":true}]);
+        assert!(plan(&outs, &ws, &tree, false, "", "", "__mirror").is_empty());
+        let disabled = json!([{"name":"eDP-1","active":true},
+            {"name":"DP-1","active":false},{"name":"HDMI-A-1","active":true}]);
+        assert!(plan(&disabled, &ws, &tree, false, "", "", "__mirror").is_empty());
     }
 }

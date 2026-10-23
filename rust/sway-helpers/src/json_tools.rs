@@ -1,4 +1,7 @@
-use crate::{common::*, workspaces::mirror_name};
+use crate::{
+    common::*,
+    workspaces::{is_mirror, mirror_name, mirror_pair_from_tree},
+};
 use serde_json::Value;
 use std::{
     env,
@@ -39,7 +42,7 @@ pub fn source<'a>(v: &'a Value, pref: &str) -> Option<&'a Value> {
         })
 }
 pub fn main(args: &[String]) -> Result<()> {
-    let action=args.first().ok_or("usage: sway-helper-json <outputs-tsv|has-mode|mirror-ok|mirror-state|wallpaper-source|wallpaper-missing>")?;
+    let action=args.first().ok_or("usage: sway-helper-json <outputs-tsv|has-mode|mirror-ok|mirror-state|mirror-pids|mirror-pair|wallpaper-source|wallpaper-missing>")?;
     let mut input = String::new();
     io::stdin().read_to_string(&mut input)?;
     let v: Value = serde_json::from_str(&input)?;
@@ -87,6 +90,18 @@ pub fn main(args: &[String]) -> Result<()> {
                     "no"
                 }
             );
+        }
+        "mirror-pids" => {
+            for view in nodes(&v).into_iter().filter(|n| is_mirror(n)) {
+                if let Some(pid) = view["pid"].as_i64().filter(|p| *p > 1) {
+                    println!("{pid}");
+                }
+            }
+        }
+        "mirror-pair" => {
+            if let Some((source, target)) = mirror_pair_from_tree(&v) {
+                println!("{source}\t{target}");
+            }
         }
         "mirror-state" => {
             let ws: Vec<_> = nodes(&v)

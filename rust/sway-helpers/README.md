@@ -11,7 +11,8 @@ Commands provided by one compiled binary:
 - `sway-mirror-workspaces`: consolidate workspaces, with `--force`, `--main`,
   `--ext`, `--mirror-ws`, `--quiet`, and `--dry-run` options.
 - `sway-mirror-workspace-daemon`: subscribe to workspace/window/output events.
-  Supports `--foreground`, `--once`, and `--once --dry-run`.
+  Supports `--foreground`, `--once`, `--once --dry-run`, and `--stop`.
+  `--stop` stops only the instance registered in the current runtime directory.
 - `sway-gamepad-idle-guard`: read Linux gamepad events and manage only inhibitors
   it acquires. Supports `--status`, `--dry-run`, `--version`, and the existing
   `GAMEPAD_IDLE_GUARD_*` environment overrides. The mirror window is excluded.
@@ -20,7 +21,9 @@ Commands provided by one compiled binary:
   frozen frame; `--dry-run` logs proposed recovery actions.
 - `sway-helper-json`: structured queries used by the existing shell display and
   wallpaper helpers. Handles output modes, mirror validation, real workspace
-  contents, and wallpaper filenames without lossy text parsing.
+  contents, and wallpaper filenames without lossy text parsing. `mirror-pids`
+  lists mirrors belonging to the queried compositor; `mirror-pair` reads the
+  selected source/destination recorded in the mirror window title.
 
 The remaining shell helpers are retained. `nwg-displays`, Waypaper, and other
 third-party applications are outside this helper migration.

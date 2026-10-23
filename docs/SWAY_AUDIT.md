@@ -1,5 +1,65 @@
 # Sway review and Rust migration
 
+## External display follow-up — 2026-10-23
+
+- Hotplug recovery now checks Sway's actual mirror windows, selected output pair,
+  and fullscreen destination. It removes stale windows on disconnect/lid close
+  and recreates mirrors which have migrated onto the wrong display.
+- Mirror termination is scoped to the current compositor's windows; stopping
+  the workspace guard uses its runtime PID/lock instead of a global `pkill`.
+- `--main`/`--ext` reach the initial workspace setup. The mirror title records
+  both outputs so workspace shortcuts and the daemon preserve the selection,
+  even with three displays or after the mirror window migrates on unplug.
+- Automatic target selection can now find a connected disabled external.
+  Invalid/missing output arguments and identical source/destination are rejected.
+- Hotplug/toggle requests wait for the startup lock instead of silently dropping
+  events. No-external callbacks return promptly instead of holding it for ten
+  seconds. Wallpaper callbacks run independently of mirror recovery.
+- Fallback/opt-in 1080p positioning uses logical output width and accepts negative
+  coordinates, avoiding gaps/incorrect placement on scaled layouts.
+- Mirror logs now use the session runtime directory.
+
+`tests/displays.py` exercised actual wl-mirror and the Rust workspace daemon in
+an isolated SwayFX instance with three virtual outputs: disabled-output enabling,
+custom source/destination, workspace switching, idempotent ensure, misplaced
+mirror recovery, disconnect/reconnect, source disabling, and manual-off behavior.
+This machine requires `WLR_RENDER_DRM_DEVICE=/dev/dri/renderD128` for that test:
+automatic headless GPU selection chooses NVIDIA while Mesa EGL is selected.
+
+The physical external display was disconnected. Samsung's configured advertised
+1080p60 mode and fit scaling are retained; physical cable/TV behavior remains
+unverified. Backups: `~/config-backup/sway-display-review-20261023-001539/`.
+
+## Follow-up review — 2026-10-23
+
+The live Sway configuration still validates successfully. Fixed four helper bugs
+in the repository and installed copies:
+
+- Manual display toggling defaulted to `cover` on 16:9 outputs, cropping the
+  laptop desktop despite the configured `fit` default. Cropping is now opt-in
+  with `SWAY_MIRROR_FILL16X9=1`, matching the documented default behavior.
+- Mirror workspace daemons inherited the startup lock on file descriptor 9,
+  potentially blocking every subsequent toggle or hotplug request. Close that
+  descriptor when launching background daemons, including the display-manager
+  fallback.
+- Wi-Fi lists split escaped SSIDs on colons and retained escape backslashes.
+  Unescaped names now occupy the last field, and security lookup matches the
+  entire name instead of a substring.
+- Menu toggling recognized shell process names but missed `wifi_menu.sh` and
+  `power_menu.sh`, which Linux uses when the scripts are executed directly.
+  Second-click closing and switching between menus now recognize these names.
+
+`python3 tests/shell_helpers.py` checks these cases with isolated command mocks,
+including default fit/explicit cover, daemon descriptor inheritance, special
+SSID characters, password routing, and all four same/cross-menu click cases.
+The original mirror scripts fail the new regression checks; the fixes pass.
+All 15 Sway helper and 9 Waybar helper Rust tests also passed. Physical display
+mirroring and actual Wi-Fi connection changes were not exercised by these tests.
+
+Installed helper backups: `~/config-backup/sway-review-20261023-000714/`.
+
+## Original review
+
 Completed on 2026-10-15. The installed compositor is SwayFX 0.6 based on
 Sway 1.12. The active configuration is `/home/kara/.config/sway/config`.
 

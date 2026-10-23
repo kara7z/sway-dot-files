@@ -46,7 +46,7 @@ VRR_OFF:
   - 'SAMSUNG'
 
 CALLBACK_CMD: |
-  "$HOME/.local/bin/sway-wallpaper-sync" >> /tmp/sway-wallpaper-sync.log 2>&1
+  "$HOME/.local/bin/sway-wallpaper-sync" >> /tmp/sway-wallpaper-sync.log 2>&1 &
   "$HOME/.local/bin/sway-display-mirror-ensure" >> /tmp/wl-mirror-ensure.log 2>&1 &
   notify-send "way-displays ${CALLBACK_LEVEL}" "${CALLBACK_MSG}"
 

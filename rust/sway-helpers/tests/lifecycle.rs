@@ -162,9 +162,12 @@ fn simultaneous_hotplug_requests_start_only_one_mirror() {
         (
             "swaymsg",
             r##"#!/bin/sh
-case "$2" in
-get_outputs) echo '[{"name":"eDP-1","active":true},{"name":"DP-1","active":true}]' ;;
-get_tree) printf '{"type":"output","name":"DP-1","nodes":[{"pid":%s,"fullscreen_mode":1}]}\n' "$(cat "$TEST_ROOT/mirror.pid")" ;;
+case "$*" in
+*get_outputs*) echo '[{"name":"eDP-1","active":true},{"name":"DP-1","active":true}]' ;;
+*get_tree*)
+  if [ -s "$TEST_ROOT/mirror.pid" ]; then
+    printf '{"type":"output","name":"DP-1","nodes":[{"pid":%s,"app_id":"at.yrlf.wl_mirror","name":"Sway mirror: eDP-1 -> DP-1","fullscreen_mode":1}]}\n' "$(cat "$TEST_ROOT/mirror.pid")"
+  else echo '{"nodes":[]}'; fi ;;
 *) echo '[{"success":true}]' ;;
 esac
 "##,

@@ -117,6 +117,12 @@ its dedicated workspace and other workspaces on the main display while mirroring
 A manual toggle off remains off through subsequent hotplug callbacks until
 re-enabled or a new session starts.
 
+`sway-display-toggle --main OUTPUT --ext OUTPUT` selects the capture source and
+destination when several monitors are connected. The workspace guard follows
+that pair. Hotplug recovery checks the actual mirror window and removes stale
+mirrors when a source or destination becomes unavailable. Mirror logs are in
+`$XDG_RUNTIME_DIR/wl-mirror.log`.
+
 The idle helper locks after five minutes, powers outputs off after ten, and
 locks before sleep. Fullscreen visible windows inhibit idle; the permanently
 fullscreen mirror is explicitly excluded. The Rust gamepad guard reads evdev
@@ -134,6 +140,9 @@ cargo clippy --locked --offline --manifest-path rust/sway-helpers/Cargo.toml --a
 cargo fmt --manifest-path rust/sway-helpers/Cargo.toml -- --check
 cargo test --locked --offline --manifest-path rust/waybar-helpers/Cargo.toml
 cargo clippy --locked --offline --manifest-path rust/waybar-helpers/Cargo.toml --all-targets -- -D warnings
+python3 tests/shell_helpers.py
+# Isolated three-display integration test (this machine's Intel render node):
+WLR_RENDER_DRM_DEVICE=/dev/dri/renderD128 python3 tests/displays.py
 bash tests/install.sh
 sway -c ~/.config/sway/config --validate
 ~/.local/bin/sway-gamepad-idle-guard --status

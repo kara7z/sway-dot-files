@@ -3,7 +3,8 @@
 #
 # Idempotent "make sure mirror is ON":
 #   - exits 0 immediately if a manual-off flag exists ($mod+p --off was used)
-#   - exits 0 if wl-mirror already running, or no external connected
+#   - keeps a healthy mirror on its selected outputs
+#   - removes stale mirrors when an output is disconnected or disabled
 #   - otherwise starts wl-mirror fullscreen on the external (SHM backends first,
 #     10-bit render_bit_depth safe) and verifies it actually captured.
 #
@@ -13,12 +14,12 @@
 set -u
 
 FLAG="${XDG_CACHE_HOME:-$HOME/.cache}/sway-mirror-manual-off"
-LOG=/tmp/wl-mirror.log
+LOG="${XDG_RUNTIME_DIR:-/tmp}/wl-mirror.log"
 BACKENDS="${SWAY_MIRROR_BACKENDS:-extcopy-shm screencopy-shm auto}"
 
 # Login, hotplug callbacks, and the toggle shortcut share the same lock.
 exec 9>"${XDG_RUNTIME_DIR:-/tmp}/sway-display-mirror.lock"
-flock -n 9 || exit 0
+flock -w 15 9 || exit 0
 
 if [ -z "${SWAYSOCK:-}" ]; then
   SWAYSOCK=$(ls /run/user/"$(id -u)"/sway-ipc.* 2>/dev/null | head -1)
@@ -26,41 +27,58 @@ if [ -z "${SWAYSOCK:-}" ]; then
 fi
 
 [ -f "$FLAG" ] && exit 0
-if pgrep -x wl-mirror >/dev/null 2>&1; then
-  # Mirror already up (e.g. login race / hotplug): make sure the workspace
-  # guard daemon is alive too, then exit.
-  [ -x "$HOME/.local/bin/sway-mirror-workspace-daemon" ] && \
-    "$HOME/.local/bin/sway-mirror-workspace-daemon" >/dev/null 2>&1 || true
-  exit 0
-fi
 
-# Wait briefly for an external (login races the output appearing).
+# Read the current compositor, not pgrep's processes from other sessions.
+JSON="$HOME/.local/bin/sway-helper-json"
+TREE=$(swaymsg -r -t get_tree) || exit 1
+TSV=$(swaymsg -r -t get_outputs | "$JSON" outputs-tsv)
+[ -n "$TSV" ] || exit 1
+mapfile -t PIDS < <(printf '%s' "$TREE" | "$JSON" mirror-pids)
+active() { printf '%s\n' "$TSV" | awk -F'\t' -v name="$1" '$1==name && $2==1 {found=1} END {exit !found}'; }
 MAIN=""; EXT=""
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-  TSV=$(swaymsg -t get_outputs 2>/dev/null | "$HOME/.local/bin/sway-helper-json" outputs-tsv)
-  [ -n "${TSV:-}" ] || { sleep 1; continue; }
+IFS=$'\t' read -r MAIN EXT < <(printf '%s' "$TREE" | "$JSON" mirror-pair) || true
+HEALTHY_PAIR=yes
+if ! active "$MAIN" || ! active "$EXT"; then
+  [ -n "$MAIN" ] && HEALTHY_PAIR=no
   MAIN=$(printf '%s\n' "$TSV" | awk -F'\t' '$2==1 && $1 ~ /^eDP/ {print $1; exit}')
   [ -n "$MAIN" ] || MAIN=$(printf '%s\n' "$TSV" | awk -F'\t' '$2==1 {print $1; exit}')
   EXT=$(printf '%s\n' "$TSV" | awk -F'\t' -v m="$MAIN" '$2==1 && $1!=m {print $1; exit}')
-  [ -n "${EXT:-}" ] && break
-  sleep 1
-done
-[ -n "${EXT:-}" ] || exit 0
+fi
+
+if [ "$HEALTHY_PAIR" = yes ] && [ -n "$EXT" ] && [ "${#PIDS[@]}" = 1 ] &&
+   [ "$(printf '%s' "$TREE" | "$JSON" mirror-ok "${PIDS[0]}" "$EXT")" = yes ]; then
+  [ -x "$HOME/.local/bin/sway-mirror-workspace-daemon" ] && \
+    "$HOME/.local/bin/sway-mirror-workspace-daemon" >/dev/null 2>&1 9>&- || true
+  exit 0
+fi
+
+# A surviving window can migrate onto the laptop on unplug, giving recursive
+# capture. Stop it before recreating on a valid destination (or exiting).
+if ((${#PIDS[@]})); then
+  "$HOME/.local/bin/sway-mirror-workspace-daemon" --stop >/dev/null 2>&1 9>&- || true
+  kill "${PIDS[@]}" 2>/dev/null || true
+  sleep 0.3
+  mapfile -t PIDS < <(swaymsg -r -t get_tree | "$JSON" mirror-pids)
+  ((${#PIDS[@]})) && kill -9 "${PIDS[@]}" 2>/dev/null || true
+fi
+# way-displays calls again when outputs become ready; do not hold the startup
+# lock for ten seconds with no external, dropping subsequent hotplug callbacks.
+[ -n "$EXT" ] || exit 0
 
 # fit letterboxes the 16:10 laptop image on 16:9 externals so the full
 # image stays visible (set SCALE=cover below to fill edge-to-edge instead).
-SCALE=fit
+SCALE="${SWAY_MIRROR_SCALING:-fit}"
 
 # Pre-mirror: park EXT on __mirror so wl-mirror lands in the dedicated
 # workspace instead of squatting a numeric one.
 if [ -x "$HOME/.local/bin/sway-mirror-workspaces" ]; then
-  "$HOME/.local/bin/sway-mirror-workspaces" --force --quiet >/dev/null 2>&1 || true
+  "$HOME/.local/bin/sway-mirror-workspaces" --main "$MAIN" --ext "$EXT" --force --quiet >/dev/null 2>&1 || true
   swaymsg focus output "$MAIN" >/dev/null 2>&1 || true
 fi
 
 for b in $BACKENDS; do
   : > "$LOG"
-  nohup wl-mirror --backend "$b" --scaling "$SCALE" --fullscreen-output "$EXT" "$MAIN" >>"$LOG" 2>&1 9>&- &
+  nohup wl-mirror --backend "$b" --scaling "$SCALE" --title "Sway mirror: $MAIN -> $EXT" --fullscreen-output "$EXT" "$MAIN" >>"$LOG" 2>&1 9>&- &
   pid=$!
   ok=no
   for _ in 1 2 3 4; do
@@ -75,10 +93,10 @@ for b in $BACKENDS; do
     # Park EXT on __mirror / pull strays to MAIN so the duplicate never
     # diverges, and (re)start the workspace guard daemon.
     if [ -x "$HOME/.local/bin/sway-mirror-workspaces" ]; then
-      "$HOME/.local/bin/sway-mirror-workspaces" --quiet >/dev/null 2>&1 || true
+      "$HOME/.local/bin/sway-mirror-workspaces" --main "$MAIN" --ext "$EXT" --quiet >/dev/null 2>&1 || true
     fi
     if [ -x "$HOME/.local/bin/sway-mirror-workspace-daemon" ]; then
-      "$HOME/.local/bin/sway-mirror-workspace-daemon" >/dev/null 2>&1 || true
+      "$HOME/.local/bin/sway-mirror-workspace-daemon" >/dev/null 2>&1 9>&- || true
     fi
     swaymsg focus output "$MAIN" >/dev/null 2>&1 || true
     exit 0
@@ -86,7 +104,7 @@ for b in $BACKENDS; do
   kill "$pid" 2>/dev/null || true
   sleep 0.5
   kill -9 "$pid" 2>/dev/null || true
-  pkill -9 -x wl-mirror 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
   sleep 0.3
 done
 
