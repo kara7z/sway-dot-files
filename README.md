@@ -54,7 +54,14 @@ A newly installed `exec` startup command runs at the next Sway login; reload onl
 reruns `exec_always` commands. The configuration uses `way-displays` for display
 management. `sway/outputs.example` is an inactive template and an existing outputs
 file is preserved. Do not enable its include while way-displays controls layouts.
-Wallpapers in `~/Pictures/Wallpapers` are personal assets and are not bundled.
+The 2026-10-25 live snapshot includes `sway/output.conf` (actively included),
+the inactive nwg-displays `sway/outputs`, Waypaper settings, and all 27 wallpapers
+from `~/Pictures/Wallpapers`. Timestamped old backups are intentionally excluded.
+The installer restores these assets and the active output include; existing
+`outputs` files are preserved. Review the machine-specific output names/modes
+before restoring on another computer. Waypaper's stylesheet path currently
+references `/home/kara`; that optional stylesheet does not exist on the source
+machine. The referenced optional keybindings file is also absent.
 
 ## Files and helpers
 
@@ -66,6 +73,7 @@ Wallpapers in `~/Pictures/Wallpapers` are personal assets and are not bundled.
 | `rust/waybar-helpers/` | Native GTK menus, media output, and keyboard JSON parsing |
 | `scripts/` | Shell Sway helpers, workspace swipe, and Waybar dropdown utilities |
 | `waybar/`, `swaync/`, `wofi/` | Panel, notification, and menu configuration |
+| `waypaper/`, `wallpapers/` | Wallpaper picker settings and wallpaper images |
 | `deps/pacman.txt` | Arch/CachyOS package dependencies |
 | `docs/SWAY_AUDIT.md` | Fixed bugs, verification results, and hardware testing limits |
 | `tests/install.sh` | Isolated installation and upgrade checks |

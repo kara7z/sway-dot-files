@@ -5,7 +5,6 @@ __pycache__/
 .DS_Store
 *.bak.*
 *.bak
-sway/outputs
 !sway/outputs.example
 waybar/config.json
 /tmp/

@@ -128,10 +128,11 @@ if [[ "$MODE" == deps-only ]]; then
   exit 0
 elif [[ "$MODE" == check ]]; then
   say "DRY-RUN: target $TARGET_HOME (no packages, builds, or files changed)"
-  echo "  sway/{config,workspaces,scripts,status.sh,wifi-menu.sh} -> .config/sway/"
-  echo "  sway/outputs.example -> .config/sway/outputs (only if absent; inactive template)"
+  echo "  sway/{config,output.conf,workspaces,scripts,status.sh,wifi-menu.sh} -> .config/sway/"
+  echo "  sway/outputs -> .config/sway/outputs (only if absent; inactive snapshot)"
   echo "  way-displays/cfg.yaml -> .config/way-displays/cfg.yaml"
-  echo "  waybar/*, swaync/*, wofi/* -> .config/"
+  echo "  waybar/*, swaync/*, wofi/*, waypaper/* -> .config/"
+  echo "  wallpapers/* -> Pictures/Wallpapers/"
   echo "  scripts/* -> .local/bin/"
   echo "  rust/sway-helpers -> build binary in .local/libexec/ and link commands in .local/bin/"
   echo "  rust/waybar-helpers -> build native GTK dropdown/media/password helpers"
@@ -158,11 +159,11 @@ fi
 cargo "${WAYBAR_CARGO_ARGS[@]}"
 
 say "Installing in $MODE mode (existing files and links are backed up)..."
-for name in config workspaces status.sh wifi-menu.sh; do
+for name in config output.conf workspaces status.sh wifi-menu.sh; do
   install_file "$REPO/sway/$name" "$TARGET_HOME/.config/sway/$name"
 done
 if [[ ! -e "$TARGET_HOME/.config/sway/outputs" && ! -L "$TARGET_HOME/.config/sway/outputs" ]]; then
-  install_file "$REPO/sway/outputs.example" "$TARGET_HOME/.config/sway/outputs"
+  install_file "$REPO/sway/outputs" "$TARGET_HOME/.config/sway/outputs"
 else
   say "Keeping existing outputs file; way-displays manages active output settings."
 fi
@@ -170,11 +171,15 @@ for f in "$REPO/sway/scripts/"*; do
   [[ -f "$f" ]] || continue
   install_file "$f" "$TARGET_HOME/.config/sway/scripts/$(basename "$f")"
 done
-for dir in way-displays waybar swaync wofi; do
+for dir in way-displays waybar swaync wofi waypaper; do
   for f in "$REPO/$dir/"*; do
     [[ -f "$f" ]] || continue
     install_file "$f" "$TARGET_HOME/.config/$dir/$(basename "$f")"
   done
+done
+for f in "$REPO/wallpapers/"*; do
+  [[ -f "$f" ]] || continue
+  install_file "$f" "$TARGET_HOME/Pictures/Wallpapers/$(basename "$f")"
 done
 for f in "$REPO/scripts/"*; do
   [[ -f "$f" ]] || continue

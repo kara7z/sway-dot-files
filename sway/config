@@ -422,12 +422,10 @@ exec dbus-update-activation-environment --systemd GTK_THEME=Adwaita:dark QT_QPA_
 # Note: eDP-1 EDID reports 8bpc, so this enables 10-bit pipeline (smoother
 # gradients) with 10bpc output that the panel will dither/truncate.
 # Revert with: swaymsg output eDP-1 render_bit_depth 8
-output eDP-1 render_bit_depth 10
 
 # Fractional scaling fix: 'nearest' looks pixelated at 1.2x, 'smart' uses
 # smooth (linear) filtering for fractional scales, sharp (nearest) for integer.
 # Placed AFTER 'include outputs' so it wins even when nwg-displays regenerates that file.
-output eDP-1 scale_filter smart
 
 # --- External outputs: managed by way-displays (cfg.yaml) ---
 # Previously hardcoded pos/scale/mode lines lived here; removed 2026-09-20
@@ -448,3 +446,8 @@ output eDP-1 scale_filter smart
 # The mirror stays fullscreen even on an idle desktop: it must not block locking.
 for_window [app_id="^at[.]yrlf[.]wl_mirror$"] border none, inhibit_idle none
 no_focus [app_id="^at[.]yrlf[.]wl_mirror$"]
+
+# Neovim login restore disabled; run ~/.local/bin/nvim-resume-login manually if wanted.
+# exec --no-startup-id ~/.local/bin/nvim-resume-login
+
+include output.conf

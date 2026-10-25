@@ -2,7 +2,7 @@
 # Exercise real builds and both installation modes without touching the session.
 set -euo pipefail
 repo=$(cd "$(dirname "$0")/.." && pwd)
-sandbox=$(mktemp -d /tmp/sway-dotfiles-test.XXXXXX)
+sandbox=$(mktemp -d /tmp/opencode/sway-dotfiles-test.XXXXXX)
 trap 'rm -rf -- "$sandbox"' EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 run_install() { bash "$repo/install.sh" "$@" >> "$sandbox/install.log" 2>&1 || { cat "$sandbox/install.log"; fail 'installer'; }; }
@@ -25,8 +25,11 @@ run_install --copy --offline --target-home "$copy_home"
 [[ $(cat "$sandbox/old-binary") == 'old shared executable' ]] || fail 'followed old helper symlink'
 compgen -G "$copy_home/.local/bin/sway-workspace.bak.*" > /dev/null || fail 'missing old helper backup'
 [[ $(cat "$copy_home/.config/sway/outputs") == 'existing output rules' ]] || fail 'outputs overwritten'
-for file in sway/config sway/workspaces way-displays/cfg.yaml; do
+for file in sway/config sway/output.conf sway/workspaces way-displays/cfg.yaml waypaper/config.ini; do
   cmp "$repo/$file" "$copy_home/.config/$file" || fail "missing or changed $file"
+done
+for file in "$repo/wallpapers/"*; do
+  cmp "$file" "$copy_home/Pictures/Wallpapers/$(basename "$file")" || fail 'wallpaper not restored'
 done
 for name in sway-helpers sway-workspace sway-mirror-workspaces sway-mirror-workspace-daemon sway-gamepad-idle-guard sway-game-freeze-daemon sway-helper-json; do
   [[ -x "$copy_home/.local/bin/$name" && -L "$copy_home/.local/bin/$name" ]] || fail "missing Rust entry point $name"
@@ -51,7 +54,7 @@ if rg -n '^[^#]*python3|\.py\b' "$repo/waybar"; then fail 'Python remains in Way
 
 link_home="$sandbox/link home"
 run_install --stow --offline --target-home "$link_home"
-for file in sway/config sway/workspaces sway/scripts/workspace-fade.sh way-displays/cfg.yaml waybar/config; do
+for file in sway/config sway/output.conf sway/outputs sway/workspaces sway/scripts/workspace-fade.sh way-displays/cfg.yaml waybar/config waypaper/config.ini; do
   [[ -L "$link_home/.config/$file" ]] || fail "missing config link $file"
   cmp "$repo/$file" "$link_home/.config/$file" || fail "wrong config link $file"
 done
