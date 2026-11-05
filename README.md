@@ -1,6 +1,15 @@
 # sway-dot-files
 
-SwayFX, Waybar, SwayNC, Wofi, and way-displays configuration for CachyOS/Arch.
+SwayFX, Waybar, SwayNC, Wofi, and way-displays configuration for CachyOS/Arch
+and **Void Linux**. See the [Void installation guide](docs/VOID.md) for XBPS,
+runit/elogind, PipeWire, Kitty, and Flameshot adaptations.
+
+![Void Linux SwayFX desktop](docs/screenshots/void-desktop.png)
+
+The installer detects the distribution; use `--profile arch` or `--profile void`
+to override. On Void, `./install-void.sh --all` installs dependencies and the
+Void overlay without changing the Arch profile.
+
 The Sway configuration and helper fixes reviewed on 2026-10-15 are included here,
 along with the Rust source, pinned dependencies, tests, and installer.
 The custom Waybar Python helpers have also been migrated to Rust; see
@@ -78,7 +87,7 @@ machine. The referenced optional keybindings file is also absent.
 | `docs/SWAY_AUDIT.md` | Fixed bugs, verification results, and hardware testing limits |
 | `tests/install.sh` | Isolated installation and upgrade checks |
 
-All Python previously used in the **Sway helpers**, including embedded snippets
+All Python previously used in the **common Sway helpers**, including embedded snippets
 in display and wallpaper scripts, has been replaced with Rust. One executable
 provides these commands:
 
@@ -93,6 +102,7 @@ See [the Rust helper documentation](rust/sway-helpers/README.md) for options.
 Waybar's GTK dropdown, password prompt, media output, and embedded keyboard
 JSON parsing also use Rust. Shell menu launchers remain in `waybar/`.
 Third-party applications retain their own dependencies.
+The Void-only Firefox fast launcher additionally uses system Python/PyGObject.
 
 The Waybar executable is installed to `~/.local/libexec/waybar-helpers`, with
 `waybar-dropdown`, `waybar-media`, `waybar-wifi-password`, and `waybar-helpers`

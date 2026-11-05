@@ -1,0 +1,23 @@
+# Void way-displays 1.14 uses the v1 sequence-based schema.
+ARRANGE: ROW
+ALIGN: TOP
+ORDER:
+  - '!^eDP-1$'
+  - '!^DP-'
+  - '!^HDMI-'
+SCALING: TRUE
+AUTO_SCALE: FALSE
+SCALE:
+  - NAME_DESC: eDP-1
+    SCALE: 1
+MODE:
+  - NAME_DESC: eDP-1
+    WIDTH: 1920
+    HEIGHT: 1200
+    HZ: 60
+VRR_OFF:
+  - eDP-1
+CALLBACK_CMD: |
+  "$HOME/.local/bin/sway-wallpaper-sync" >> /tmp/sway-wallpaper-sync.log 2>&1 &
+  "$HOME/.local/bin/sway-display-mirror-ensure" >> /tmp/wl-mirror-ensure.log 2>&1 &
+LOG_THRESHOLD: INFO

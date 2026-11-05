@@ -1,0 +1,431 @@
+# Default config for sway
+#
+# Copy this to ~/.config/sway/config and edit it to your liking.
+#
+# Read `man 5 sway` for a complete reference.
+
+### Variables
+#
+# Logo key. Use Mod1 for Alt. Swapped to keep Alt-j/k free for nvim
+# $mod=Alt (main sway mod) ; $mod2=Super (for alt-browser vs splith conflict)
+set $mod Mod1
+set $mod2 Mod4
+# Home row direction keys, like vim (kept for resize mode, but focus uses arrows to free Alt+h/j/k)
+set $left h
+set $down j
+set $up k
+set $right l
+# Your preferred terminal emulator
+# Reuse Kitty's GPU/font caches instead of initializing a new process per window.
+set $term kitty --single-instance --instance-group=desktop
+# Start normally: the old hidden instance retained the broken rendering state.
+# Shortcuts
+set $browser ~/.local/bin/firefox-new-window
+# Your preferred application launcher
+set $DisplayManager wdisplays
+set $menu ~/.local/bin/sway-launcher
+set $Files ~/.local/bin/files-new-window
+
+set $Bluetooth blueman-applet
+font pango:monospace 8
+seat seat0 xcursor_theme Bibata-Modern-Ice 24
+titlebar_border_thickness 1
+titlebar_padding 4 2
+
+# gaps
+workspace 5 gaps horizontal 150
+workspace 5 gaps vertical 50
+workspace 5 gaps inner 10
+### SwayFX eye-candy
+# Enable blur globally; game-specific rules below disable it for those windows.
+
+default_border normal 1
+default_floating_border pixel 1
+hide_edge_borders smart
+
+# Window colors
+#                 border       background   text         indicator    child_border
+client.focused    #2266cc       #000000     #ffffff      #2266cc      #2266cc
+client.focused_inactive #333333 #000000     #888888     #333333      #333333
+client.unfocused   #333333     #000000     #555555     #333333      #333333
+client.urgent      #ff0000     #ff0000     #ffffff      #ff0000      #ff0000
+
+
+### Output configuration
+#
+# Default wallpaper handled by awww-daemon
+#
+# Example configuration:
+#
+#   output HDMI-A-1 resolution 1920x1080 position 1920,0
+#
+# You can get the names of your outputs by running: swaymsg -t get_outputs
+
+### Idle configuration
+#
+# Idle lock is ON: lock after 5 min, outputs off after 10 min, lock before sleep.
+# The helper keeps exactly one swayidle alive across config reloads.
+# Tune the timeouts inside ~/.local/bin/sway-idle-lock.
+exec_always ~/.local/bin/sway-idle-lock
+
+# Keep Nautilus warm so Super+E opens its first window without the cold
+# application and Tracker startup delay. Its D-Bus service opens windows on demand.
+exec nautilus --gapplication-service
+
+### Idle lock vs. gamepads — fullscreen only
+# Games read the controller straight from /dev/input, so sway sees no
+# keyboard/pointer activity while you play: swayidle used to lock the session
+# after 5 min and blank the screen after 10 min mid-game (reproduced
+# 2026-09-25 — a 3 s test timeout fired while the focused XWayland Proton
+# window `steam_app_387290` was playing). A view with `inhibit_idle fullscreen`
+# pauses *both* timers only while that view is fullscreen and visible; windowed
+# games / desktop still lock after 5 min, `before-sleep` is untouched.
+# (man 5 sway: focus=on focus, fullscreen=only when fullscreen+visible).
+# Steam + Proton games (XWayland)
+for_window [class="^steam_app_"]    inhibit_idle fullscreen
+# Steam games (native Wayland)
+for_window [app_id="^steam_app_"]   inhibit_idle fullscreen
+# Steam client / Big Picture
+for_window [class="^steam$"]        inhibit_idle fullscreen
+# Wine/Proton exe windows
+for_window [class="[.]exe$"]        inhibit_idle fullscreen
+for_window [class="^gamescope"]     inhibit_idle fullscreen
+for_window [app_id="^gamescope"]    inhibit_idle fullscreen
+# Minecraft (XWayland)
+for_window [class="^[Mm]inecraft"]  inhibit_idle fullscreen
+for_window [app_id="^[Mm]inecraft"] inhibit_idle fullscreen
+for_window [class="^[Ll]utris"]     inhibit_idle fullscreen
+for_window [class="^[Hh]eroic"]     inhibit_idle fullscreen
+# Any fullscreen window (game, video, browser F11): only while fullscreen+visible.
+for_window [all] inhibit_idle fullscreen
+# for_window only hits new windows: re-apply to existing views on each reload
+# (old terminals kept user=none and still locked fullscreen — seen 2026-09-28).
+exec_always --no-startup-id swaymsg '[all] inhibit_idle fullscreen; [app_id="^at[.]yrlf[.]wl_mirror$"] inhibit_idle none' >/dev/null 2>&1
+
+# Same guard driven by real gamepad input — covers games whose class/app_id is
+# not listed above (reads the pads itself, holds/clears `inhibit_idle fullscreen`
+# around play, releases after 300 s of pad silence; see --status / --dry-run).
+exec_always --no-startup-id ~/.local/bin/sway-gamepad-idle-guard
+
+### Fullscreen games: keep frames flowing (SwayFX + XWayland/Proton)
+# Symptom 2026-09-25: a fullscreen game view can stop updating (frozen picture,
+# PC otherwise alive; leaving/entering fullscreen — or switching the display
+# away and back — restarts the frames). SwayFX blur/animate work plus exclusive
+# fullscreen scanout all touch that path, so game views get the cheapest
+# possible fullscreen here: per-window blur off on Steam/Proton views. This
+# follows the existing SwayFX comment below (blur on globally, but fullscreen
+# must not pay for it); the rest of the desktop keeps its blur.
+# Steam + Proton games (XWayland)
+# Steam games (native Wayland)
+# Steam client / Big Picture
+# Wine/Proton exe windows
+# Minecraft (XWayland)
+
+### Input configuration
+#
+# Example configuration:
+#
+input type:touchpad {
+    dwt enabled
+    tap enabled
+    natural_scroll enabled
+    middle_emulation enabled
+    scroll_factor 0.3
+}
+
+input type:keyboard {
+    xkb_layout us,ara,fr
+}
+#
+# You can also configure each device individually.
+# Read `man 5 sway-input` for more information about this section.
+
+#startup application
+
+# awww owns the wallpaper. Disable Sway's built-in swaybg launcher and keep
+# the existing awww daemon on reload; start it only if its IPC is unavailable.
+swaybg_command -
+exec_always sh -c 'awww query >/dev/null 2>&1 || exec awww-daemon'
+# Discord: start at session login. The pgrep guard means a config reload
+# (Alt+Shift+C) no longer launches a second instance / re-opens the window.
+exec --no-startup-id bash -c 'command -v discord >/dev/null && { pgrep -ix discord >/dev/null || discord & }'
+exec --no-startup-id $Bluetooth
+# Battery warnings: 15% low, 5% critical (notify via swaync)
+exec ~/.local/bin/sway-battery-notify
+bindgesture swipe:3:left exec ~/.local/bin/workspace-swipe next
+bindgesture swipe:3:right exec ~/.local/bin/workspace-swipe prev
+
+
+
+### Key bindings
+#
+# Basics:
+#
+    # Start a terminal
+    bindsym $mod+Return exec $term
+    # NOTE: way-displays owns the external outputs now, so changes made in
+    # nwg-displays are reverted within ~2s (verified 2026-09-24). Change the
+    # layout live with `way-displays -s MODE|SCALE|DISABLED ...`, or edit
+    # ~/.config/way-displays/cfg.yaml; `way-displays -w` saves the active layout.
+    bindsym $mod2+d exec $DisplayManager
+    bindsym $mod2+b exec $browser
+    bindsym $mod2+w exec waypaper
+    bindsym $mod2+e exec $Files
+    # Kill focused window
+    bindsym CTRL+q kill
+    # Start your launcher
+    bindsym $mod+d exec $menu
+
+    bindsym $mod+Shift+r exec sh -c 'pkill -x waybar; exec waybar'
+    # Drag floating windows by holding down $mod and left mouse button.
+    # Resize them with right mouse button + $mod.
+    # Despite the name, also works for non-floating windows.
+    # Change normal to inverse to use left mouse button for resizing and right
+    # mouse button for dragging.
+    floating_modifier $mod normal
+
+    # Reload the configuration file
+    bindsym $mod+Shift+c reload
+
+    # Switch keyboard layout (US/AR/FR)
+    bindsym $mod2+space exec swaymsg input type:keyboard xkb_switch_layout next
+
+    # Lock the screen now (Super+L) — same classic wallpaper lock as the idle timeout
+    # (implemented in ~/.local/bin/sway-lock)
+    bindsym $mod2+l exec ~/.local/bin/sway-lock
+    # Unstick a frozen fullscreen game (Super+G): leave + re-enter fullscreen on
+    # the focused window, exactly the manual fix, without touching the game.
+    bindsym $mod2+g exec ~/.local/bin/sway-game-unstick
+
+    # Exit sway (logs you out of your Wayland session)
+    bindsym $mod+Shift+e exec swaynag -t warning -m 'You pressed the exit shortcut. Do you really want to exit sway? This will end your Wayland session.' -B 'Yes, exit sway' 'swaymsg exit'
+#
+# Moving around:
+# NOTE: Focus uses Alt+Arrows + Alt+h/l for left/right to keep Alt+j/k free for nvim Alt-j/k line moves
+# (Sway would grab Alt+j/k before kitty/nvim, so Alt+j/k would never reach nvim)
+# Move uses Alt+Shift+h/j/k/l + arrows (Shift distinguishes from nvim's plain Alt-j/k)
+#
+    # Move your focus around - Alt+Arrows + Alt+h/l for left/right (Alt+j/k free for nvim)
+    bindsym $mod+$left focus left
+    bindsym $mod+$right focus right
+    bindsym $mod+Left focus left
+    bindsym $mod+Down focus down
+    bindsym $mod+Up focus up
+    bindsym $mod+Right focus right
+
+    # Move the focused window with the same, but add Shift
+    bindsym $mod+Shift+$left move left
+    bindsym $mod+Shift+$down move down
+    bindsym $mod+Shift+$up move up
+    bindsym $mod+Shift+$right move right
+    # Ditto, with arrow keys
+    bindsym $mod+Shift+Left move left
+    bindsym $mod+Shift+Down move down
+    bindsym $mod+Shift+Up move up
+    bindsym $mod+Shift+Right move right
+#
+# Workspaces:
+#
+    # Switch to workspace (mirror-safe: ~/.local/bin/sway-workspace pulls the
+    # workspace onto MAIN/eDP-1 while wl-mirror duplicate mode is active, so
+    # the laptop and the external never diverge; no-op in extended mode).
+    bindsym $mod+1 exec ~/.local/bin/sway-workspace workspace number 1
+    bindsym $mod+2 exec ~/.local/bin/sway-workspace workspace number 2
+    bindsym $mod+3 exec ~/.local/bin/sway-workspace workspace number 3
+    bindsym $mod+4 exec ~/.local/bin/sway-workspace workspace number 4
+    bindsym $mod+5 exec ~/.local/bin/sway-workspace workspace number 5
+    bindsym $mod+6 exec ~/.local/bin/sway-workspace workspace number 6
+    bindsym $mod+7 exec ~/.local/bin/sway-workspace workspace number 7
+    bindsym $mod+8 exec ~/.local/bin/sway-workspace workspace number 8
+    bindsym $mod+9 exec ~/.local/bin/sway-workspace workspace number 9
+    bindsym $mod+0 exec ~/.local/bin/sway-workspace workspace number 10
+    # Move focused container to workspace (mirror-safe, same reason)
+    bindsym $mod+Shift+1 exec ~/.local/bin/sway-workspace move container to workspace number 1
+    bindsym $mod+Shift+2 exec ~/.local/bin/sway-workspace move container to workspace number 2
+    bindsym $mod+Shift+3 exec ~/.local/bin/sway-workspace move container to workspace number 3
+    bindsym $mod+Shift+4 exec ~/.local/bin/sway-workspace move container to workspace number 4
+    bindsym $mod+Shift+5 exec ~/.local/bin/sway-workspace move container to workspace number 5
+    bindsym $mod+Shift+6 exec ~/.local/bin/sway-workspace move container to workspace number 6
+    bindsym $mod+Shift+7 exec ~/.local/bin/sway-workspace move container to workspace number 7
+    bindsym $mod+Shift+8 exec ~/.local/bin/sway-workspace move container to workspace number 8
+    bindsym $mod+Shift+9 exec ~/.local/bin/sway-workspace move container to workspace number 9
+    bindsym $mod+Shift+0 exec ~/.local/bin/sway-workspace move container to workspace number 10
+    # Note: workspaces can have any name you want, not just numbers.
+    # We just use 1-10 as the default.
+#
+# Layout stuff:
+#
+    # You can "split" the current object of your focus with
+    # $mod+b or $mod+v, for horizontal and vertical splits
+    # respectively.
+    bindsym $mod+b splith
+    bindsym $mod+v splitv
+
+    # Switch the current container between different layout styles
+    bindsym $mod+s layout stacking
+    bindsym $mod+w layout tabbed
+    bindsym $mod+e layout toggle split
+
+    # Make the current focus fullscreen
+    bindsym $mod+f fullscreen
+
+    # Toggle the current focus between tiling and floating mode
+    bindsym $mod+Shift+space floating toggle
+
+    # Swap focus between the tiling area and the floating area
+    bindsym $mod+space focus mode_toggle
+
+    # Move focus to the parent container
+    bindsym $mod+a focus parent
+#
+# Scratchpad:
+#
+    # Sway has a "scratchpad", which is a bag of holding for windows.
+    # You can send windows there and get them back later.
+
+    # Move the currently focused window to the scratchpad
+    bindsym $mod+Shift+minus move scratchpad
+
+    # Show the next scratchpad window or hide the focused scratchpad window.
+    # If there are multiple scratchpad windows, this command cycles through them.
+    bindsym $mod+minus scratchpad show
+#
+# Resizing containers:
+#
+mode "resize" {
+    # left will shrink the containers width
+    # right will grow the containers width
+    # up will shrink the containers height
+    # down will grow the containers height
+    bindsym $left resize shrink width 10px
+    bindsym $down resize grow height 10px
+    bindsym $up resize shrink height 10px
+    bindsym $right resize grow width 10px
+
+    # Ditto, with arrow keys
+    bindsym Left resize shrink width 10px
+    bindsym Down resize grow height 10px
+    bindsym Up resize shrink height 10px
+    bindsym Right resize grow width 10px
+
+    # Return to default mode
+    bindsym Return mode "default"
+    bindsym Escape mode "default"
+}
+bindsym $mod+r mode "resize"
+#
+# Utilities:
+#
+    # Special keys to adjust volume via PulseAudio
+    bindsym --locked XF86AudioMute exec pactl set-sink-mute \@DEFAULT_SINK@ toggle
+    bindsym --locked XF86AudioLowerVolume exec pactl set-sink-volume \@DEFAULT_SINK@ -5%
+    bindsym --locked XF86AudioRaiseVolume exec pactl set-sink-volume \@DEFAULT_SINK@ +5%
+    bindsym --locked XF86AudioMicMute exec pactl set-source-mute \@DEFAULT_SOURCE@ toggle
+
+    # Special keys to control media via playerctl
+    bindsym --locked XF86AudioPlay exec playerctl play-pause
+    bindsym --locked XF86AudioPause exec playerctl play-pause
+    bindsym --locked XF86AudioPrev exec playerctl previous
+    bindsym --locked XF86AudioNext exec playerctl next
+    bindsym --locked XF86AudioStop exec playerctl stop
+
+    # Special keys to adjust brightness in 2% steps via ~/.local/bin/sway-brightness,
+    # which clamps the backlight to [1%, 100%] of the panel maximum: it never drops
+    # to 0% (a fully off backlight looks like a dead screen). The same helper is used
+    # by the waybar backlight module's scroll actions.
+    bindsym --locked XF86MonBrightnessDown exec ~/.local/bin/sway-brightness down
+    bindsym --locked XF86MonBrightnessUp exec ~/.local/bin/sway-brightness up
+
+    # $mod+p — duplicate (mirror) the laptop screen on the connected external.
+    # The script keeps the first wl-mirror backend that survives 1s:
+    # extcopy-shm -> screencopy-shm -> auto (SHM is required while eDP-1 is
+    # 10-bit: render_bit_depth 10 breaks the DMA-BUF/GL import on this iGPU).
+    # Uses wl-mirror; overlapping output positions do not clone Sway workspaces.
+    bindsym $mod+p exec ~/.local/bin/sway-display-toggle
+    # Also on Super+P ($mod2 = Mod4): $mod is Mod1 (Alt) here, so this makes
+    # "mod+p" work whichever modifier your fingers reach for.
+    bindsym $mod2+p exec ~/.local/bin/sway-display-toggle
+    # Fn keys
+    bindsym --locked XF86Display exec ~/.local/bin/sway-display-toggle
+    bindsym --locked XF86DisplayToggle exec ~/.local/bin/sway-display-toggle
+    bindsym --locked XF86Fn_F6 exec wdisplays
+    bindsym --locked XF86Fn_F8 exec wdisplays
+
+    # Graphical area selection, annotations, save and clipboard actions.
+    bindsym Print exec env QT_QPA_PLATFORM=wayland flameshot gui
+
+#
+# Status Bar:
+#
+# Read `man 5 sway-bar` for more information about this section.
+# Wait for working audio before starting Waybar; retry safely on reload.
+exec_always ~/.local/bin/sway-waybar
+exec swaync
+# NetworkManager secret agent: nm-applet is intentionally NOT started — it adds
+# a Wi-Fi icon to the waybar tray. Wi-Fi passwords are supplied by the custom
+# waybar menu (~/.config/waybar/wifi_menu.sh, `nmcli ... password`), which needs
+# no agent. polkit-kde-agent stays for privileged auth prompts (no tray icon).
+exec ~/.local/bin/sway-void-startup
+exec way-displays > /tmp/way-displays.${XDG_VTNR}.${USER}.log 2>&1
+# Permanent duplicate: re-mirror laptop onto external on login (hotplug is
+# covered by way-displays CALLBACK_CMD). Clears any manual-off from last session.
+exec bash -c 'rm -f "${XDG_CACHE_HOME:-$HOME/.cache}/sway-mirror-manual-off"; ~/.local/bin/sway-display-mirror-ensure >> /tmp/wl-mirror-ensure.log 2>&1'
+
+for_window [title="Password for .*"] floating enable, border pixel 1, move position center
+
+# way-displays owns modes/positions/scales now (see exec way-displays above).
+# nwg-displays outputs file disabled to avoid fighting the daemon.
+# Re-enable only if you stop using way-displays.
+# include ~/.config/sway/outputs
+include ~/.config/sway/workspaces
+include /etc/sway/config.d/*
+
+# --- SwayFX: preserve blur animation (250ms) but prevent wallpaper-only on workspace switch ---
+# Final global blur settings after the config.d includes.
+# Reduce corner/shadow effects that trigger fullscreen damage bug (keep blur, drop corners/shadows for fix)
+
+# Global dark mode — GTK / libadwaita / Qt / Electron / Firefox (portal follows color-scheme)
+exec_always gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark' && gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark' && gsettings set org.gnome.desktop.interface icon-theme 'Adwaita' && gsettings set org.gnome.desktop.interface cursor-theme 'Bibata-Modern-Ice'
+# NOTE: values containing ',' or ';' MUST be quoted. sway's parser treats BOTH
+# as command separators, so an unquoted `GDK_BACKEND=wayland,x11` silently
+# truncated this line at the comma: the ,x11 fallback and every assignment
+# after it (QT_QPA_PLATFORM/SDL_VIDEODRIVER/XDG_SESSION_TYPE/...) were dropped
+# and sway logged "Unknown/invalid command". Only the values above the comma
+# were applied. environment.d masked the rest.
+
+# 10-bit color: 10bpc render + wire (sets DRM max bpc 8 -> 10 on i915)
+# Note: eDP-1 EDID reports 8bpc, so this enables 10-bit pipeline (smoother
+# gradients) with 10bpc output that the panel will dither/truncate.
+# Revert with: swaymsg output eDP-1 render_bit_depth 8
+
+# Fractional scaling fix: 'nearest' looks pixelated at 1.2x, 'smart' uses
+# smooth (linear) filtering for fractional scales, sharp (nearest) for integer.
+# Placed AFTER 'include outputs' so it wins even when nwg-displays regenerates that file.
+
+# --- External outputs: managed by way-displays (cfg.yaml) ---
+# Previously hardcoded pos/scale/mode lines lived here; removed 2026-09-20
+# because they fight the way-displays daemon (double management = flicker/override).
+# Layout now: ORDER eDP-1 then DP-/HDMI-, ROW TOP, scale 1, eDP native 1920x1200.
+# Mirror on demand still works: ~/.local/bin/sway-display-toggle (or $mod+p).
+# eDP-only tuning kept (way-displays does not manage these):
+
+# --- Duplicate-mode workspace guard (fix: ws switching to EXT only) ---
+# wl-mirror copies MAIN's pixels but sway keeps one workspace per output, so a
+# fresh `workspace N` created while focused on EXT (or an N already living on
+# EXT) shows ONLY on the external. The wrapper (~/.local/bin/sway-workspace) +
+# event daemon (sway-mirror-workspace-daemon) pull stray workspaces back to
+# MAIN (eDP-*) and park the external on the dedicated __mirror workspace.
+# Workspace 1 is pinned by the included workspaces file; other workspaces
+# stay unpinned so extended mode can create them on either output.
+# wl-mirror window: no border, never auto-focuses away from MAIN content.
+# The mirror stays fullscreen even on an idle desktop: it must not block locking.
+for_window [app_id="^at[.]yrlf[.]wl_mirror$"] border none, inhibit_idle none
+no_focus [app_id="^at[.]yrlf[.]wl_mirror$"]
+
+# Neovim login restore disabled; run ~/.local/bin/nvim-resume-login manually if wanted.
+# exec --no-startup-id ~/.local/bin/nvim-resume-login
+
+include output.conf
+
+# SwayFX effects from kara7z/sway-dot-files (blur and window animations).
+include ~/.config/sway/effects.conf

@@ -1,0 +1,4 @@
+#!/bin/sh
+# Include user-installed applications even when Sway starts without a login shell.
+export PATH="$HOME/.local/bin:$HOME/.local/npm/bin:$PATH"
+exec wmenu-run "$@"

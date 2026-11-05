@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sway-dot-files installer — CachyOS / Arch (SwayFX)
+# sway-dot-files installer — CachyOS / Arch and Void Linux (SwayFX)
 # Usage:
 #   ./install.sh --check        # dry-run, show what would be linked
 #   ./install.sh                # copy files (default, safe)
@@ -17,6 +17,7 @@ DO_DEPS=false
 TARGET_HOME="$HOME"
 OFFLINE=false
 DRY_RUN=false
+PROFILE=auto
 
 while (($#)); do
   case "$1" in
@@ -26,11 +27,14 @@ while (($#)); do
     --deps) DO_DEPS=true ;;
     --check) DRY_RUN=true ;;
     --offline) OFFLINE=true ;;
+    --profile)
+      [[ $# -ge 2 ]] || { echo '--profile requires auto, arch, or void' >&2; exit 2; }
+      PROFILE="$2"; shift ;;
     --target-home)
       [[ $# -ge 2 && "$2" == /* && "$2" != / ]] || { echo '--target-home requires an absolute home directory' >&2; exit 2; }
       TARGET_HOME="${2%/}"; shift ;;
     -h|--help)
-      echo "Usage: $0 [--all|--stow|--copy|--check|--deps] [--offline] [--target-home DIRECTORY]"
+      echo "Usage: $0 [--all|--stow|--copy|--check|--deps] [--profile auto|arch|void] [--offline] [--target-home DIRECTORY]"
       echo "  --all   One command: deps + dotfiles (new device)"
       echo "  --deps  Only deps"
       echo "  --copy  Only dotfiles (default)"
@@ -45,6 +49,15 @@ while (($#)); do
   shift
 done
 
+if [[ "$PROFILE" == auto ]]; then
+  PROFILE=arch
+  if [[ -r /etc/os-release ]]; then
+    distro_id=$(. /etc/os-release; printf '%s' "$ID")
+    [[ "$distro_id" != void ]] || PROFILE=void
+  fi
+fi
+case "$PROFILE" in arch|void) ;; *) echo 'Invalid profile: use auto, arch, or void' >&2; exit 2 ;; esac
+
 if $DRY_RUN; then
   MODE=check
   DO_DEPS=false
@@ -57,6 +70,12 @@ warn(){ echo -e "\033[1;33m[warn]\033[0m $*"; }
 die(){ echo -e "\033[1;31m[err]\033[0m $*"; exit 1; }
 
 if $DO_DEPS; then
+  if [[ "$PROFILE" == void ]]; then
+    command -v xbps-install >/dev/null || die 'The Void profile requires XBPS for --deps/--all.'
+    mapfile -t void_pkgs < <(awk '!/^#/ && NF {print $1}' "$REPO/deps/xbps.txt")
+    say "Installing Void Linux dependencies (no services are enabled automatically)..."
+    sudo xbps-install -Sy "${void_pkgs[@]}"
+  else
   say "Installing deps from deps/pacman.txt ..."
   if command -v pacman &>/dev/null; then
     aur_fallback=""
@@ -98,6 +117,7 @@ if $DO_DEPS; then
   else
     warn "pacman not found (non-Arch?) — skipping deps, install manually from deps/pacman.txt"
   fi
+  fi
 fi
 
 backup_if_exists(){
@@ -111,6 +131,10 @@ backup_if_exists(){
 
 install_file(){
   local src="$1" dst="$2"
+  if [[ "$PROFILE" == void && "$src" == "$REPO/"* ]]; then
+    local overlay="$REPO/profiles/void/${src#"$REPO/"}"
+    [[ ! -f "$overlay" ]] || src="$overlay"
+  fi
   mkdir -p "$(dirname "$dst")"
   # Move symlinks too: copying through one could overwrite a shared binary.
   backup_if_exists "$dst"
@@ -128,6 +152,8 @@ if [[ "$MODE" == deps-only ]]; then
   exit 0
 elif [[ "$MODE" == check ]]; then
   say "DRY-RUN: target $TARGET_HOME (no packages, builds, or files changed)"
+  echo "  profile: $PROFILE"
+  [[ "$PROFILE" != void ]] || echo '  profiles/void/* overrides matching files and adds Void launchers, Kitty, Flameshot and PipeWire configuration'
   echo "  sway/{config,output.conf,workspaces,scripts,status.sh,wifi-menu.sh} -> .config/sway/"
   echo "  sway/outputs -> .config/sway/outputs (only if absent; inactive snapshot)"
   echo "  way-displays/cfg.yaml -> .config/way-displays/cfg.yaml"
@@ -185,6 +211,19 @@ for f in "$REPO/scripts/"*; do
   [[ -f "$f" ]] || continue
   install_file "$f" "$TARGET_HOME/.local/bin/$(basename "$f")"
 done
+if [[ "$PROFILE" == void ]]; then
+  # Install overlay-only files; matching base files were selected above.
+  while IFS= read -r -d '' src; do
+    relative="${src#"$REPO/profiles/void/"}"
+    [[ ! -f "$REPO/$relative" ]] || continue
+    case "$relative" in
+      scripts/*) dst="$TARGET_HOME/.local/bin/${relative#scripts/}" ;;
+      applications/*) dst="$TARGET_HOME/.local/share/applications/${relative#applications/}" ;;
+      *) dst="$TARGET_HOME/.config/$relative" ;;
+    esac
+    install_file "$src" "$dst"
+  done < <(find "$REPO/profiles/void" -type f -print0)
+fi
 for name in sway-helpers sway-workspace sway-mirror-workspaces sway-mirror-workspace-daemon sway-gamepad-idle-guard sway-game-freeze-daemon sway-helper-json; do
   backup_if_exists "$TARGET_HOME/.local/bin/$name"
 done

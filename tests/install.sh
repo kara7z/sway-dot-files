@@ -5,13 +5,16 @@ repo=$(cd "$(dirname "$0")/.." && pwd)
 sandbox=$(mktemp -d /tmp/opencode/sway-dotfiles-test.XXXXXX)
 trap 'rm -rf -- "$sandbox"' EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
-run_install() { bash "$repo/install.sh" "$@" >> "$sandbox/install.log" 2>&1 || { cat "$sandbox/install.log"; fail 'installer'; }; }
+run_install() { bash "$repo/install.sh" --profile arch "$@" >> "$sandbox/install.log" 2>&1 || { cat "$sandbox/install.log"; fail 'installer'; }; }
 
 # --check must win over --all in either order and leave no destination.
 run_install --all --check --target-home "$sandbox/check"
 run_install --check --all --target-home "$sandbox/check"
 [[ ! -e "$sandbox/check" ]] || fail 'dry-run wrote destination'
 if bash "$repo/install.sh" --unknown > /dev/null 2>&1; then fail 'unknown option accepted'; fi
+if bash "$repo/install.sh" --profile invalid --check > /dev/null 2>&1; then fail 'invalid profile accepted'; fi
+run_install --profile void --all --check --target-home "$sandbox/check-void"
+[[ ! -e "$sandbox/check-void" ]] || fail 'Void dry-run wrote destination'
 
 # Preserve the target of an old helper symlink, as well as the old link itself.
 copy_home="$sandbox/copy home"
@@ -68,4 +71,16 @@ run_install --copy --offline --target-home "$link_home"
 cmp "$repo/sway/config" "$link_home/.config/sway/config"
 compgen -G "$link_home/.config/sway/config.bak.*" > /dev/null || fail 'missing config symlink backup'
 "$link_home/.local/bin/sway-gamepad-idle-guard" --version
-printf '%s\n' 'PASS: dry-run, copy, symlink, upgrade, backups, and Rust entry points'
+void_home="$sandbox/void home"
+run_install --profile void --copy --offline --target-home "$void_home"
+for file in sway/config sway/effects.conf kitty/kitty.conf flameshot/flameshot.ini way-displays/cfg.yaml pipewire/pipewire.conf.d/10-wireplumber.conf; do
+  cmp "$repo/profiles/void/$file" "$void_home/.config/$file" || fail "Void overlay $file"
+done
+for name in files-new-window firefox-new-window sway-void-startup; do
+  [[ -x "$void_home/.local/bin/$name" ]] || fail "Void launcher $name"
+done
+cmp "$repo/profiles/void/applications/kitty.desktop" "$void_home/.local/share/applications/kitty.desktop" || fail 'Void desktop launcher'
+run_install --profile void --stow --offline --target-home "$sandbox/void-link"
+[[ -L "$sandbox/void-link/.config/sway/effects.conf" ]] || fail 'Void overlay symlink'
+cmp "$repo/profiles/void/sway/config" "$sandbox/void-link/.config/sway/config" || fail 'Void base override symlink'
+printf '%s\n' 'PASS: Arch/Void dry-run, copy, symlink, upgrade, backups, and Rust entry points'

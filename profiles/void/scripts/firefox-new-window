@@ -1,0 +1,50 @@
+#!/usr/bin/env python3
+"""Request a new Firefox window without loading another Firefox client."""
+
+import os
+import struct
+
+
+def open_window():
+    from gi.repository import Gio, GLib
+
+    bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+    names = bus.call_sync(
+        "org.freedesktop.DBus", "/org/freedesktop/DBus",
+        "org.freedesktop.DBus", "ListNames", None,
+        GLib.VariantType.new("(as)"), Gio.DBusCallFlags.NONE, 1000, None,
+    ).unpack()[0]
+    destinations = [name for name in names if name.startswith("org.mozilla.firefox.")]
+    # Let Firefox choose the profile when multiple profiles are running.
+    if len(destinations) != 1:
+        return False
+
+    argv0 = "firefox"
+    token = os.environ.get("XDG_ACTIVATION_TOKEN") or os.environ.get("DESKTOP_STARTUP_ID")
+    if token:
+        argv0 += " STARTUP_TOKEN=" + token
+    args = [os.fsencode(argv0), b"--new-window"]
+    # Firefox's remote protocol: argc, argument offsets, cwd, NUL-terminated args.
+    offset = 4 * (len(args) + 1)
+    strings = os.fsencode(os.getcwd()) + b"\0"
+    offsets = []
+    for arg in args:
+        offsets.append(offset + len(strings))
+        strings += arg + b"\0"
+    payload = struct.pack("<" + "I" * (len(args) + 1), len(args), *offsets) + strings
+    bus.call_sync(
+        destinations[0], "/org/mozilla/firefox/Remote", "org.mozilla.firefox",
+        "OpenURL", GLib.Variant("(ay)", (list(payload),)), None,
+        Gio.DBusCallFlags.NONE, 2000, None,
+    )
+    return True
+
+
+try:
+    if open_window():
+        raise SystemExit(0)
+except Exception:
+    # Cold starts and unavailable/changed D-Bus interfaces use Firefox itself.
+    pass
+
+os.execvp("firefox", ["firefox", "--new-window"])

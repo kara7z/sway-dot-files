@@ -1,0 +1,36 @@
+#!/bin/sh
+# Session services for Void Linux (no systemd user manager).
+export PATH="$HOME/.local/bin:$PATH"
+export XDG_CURRENT_DESKTOP=sway XDG_SESSION_DESKTOP=sway XDG_SESSION_TYPE=wayland
+export GTK_THEME=Adwaita:dark XCURSOR_THEME=Bibata-Modern-Ice XCURSOR_SIZE=24
+export MOZ_ENABLE_WAYLAND=1 ELECTRON_OZONE_PLATFORM_HINT=auto
+dbus-update-activation-environment WAYLAND_DISPLAY DISPLAY SWAYSOCK PATH \
+    XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE \
+    GTK_THEME XCURSOR_THEME XCURSOR_SIZE MOZ_ENABLE_WAYLAND ELECTRON_OZONE_PLATFORM_HINT
+state="${XDG_STATE_HOME:-$HOME/.local/state}/sway"
+mkdir -p "$state"
+# A logout can remove the runtime sockets while orphaned audio processes remain.
+# A process-name check alone would keep those unreachable servers forever.
+if pgrep -u "$(id -u)" -x pipewire >/dev/null &&
+   [ ! -S "$XDG_RUNTIME_DIR/pipewire-0" ]; then
+    pkill -u "$(id -u)" -x wireplumber
+    pkill -u "$(id -u)" -x pipewire
+    i=0
+    while pgrep -u "$(id -u)" -x pipewire >/dev/null && [ "$i" -lt 50 ]; do
+        sleep 0.1
+        i=$((i + 1))
+    done
+fi
+if ! pgrep -u "$(id -u)" -x pipewire >/dev/null; then
+    pipewire >>"$state/pipewire.log" 2>&1 &
+fi
+if ! pgrep -u "$(id -u)" -f '^/usr/libexec/polkit-gnome-authentication-agent-1' >/dev/null; then
+    /usr/libexec/polkit-gnome-authentication-agent-1 >>"$state/polkit.log" 2>&1 &
+fi
+# Wait for wallpaper IPC before restoring the saved wallpaper.
+i=0
+while ! awww query >/dev/null 2>&1 && [ "$i" -lt 50 ]; do
+    sleep 0.1
+    i=$((i + 1))
+done
+waypaper --restore >>"$state/waypaper.log" 2>&1

@@ -1,0 +1,18 @@
+#!/bin/sh
+# Waybar 0.15's audio module can exhaust file handles if PulseAudio is absent.
+# Serialize reloads and wait until the PipeWire Pulse server accepts clients.
+state="${XDG_STATE_HOME:-$HOME/.local/state}/sway"
+mkdir -p "$state"
+exec 9>"$XDG_RUNTIME_DIR/sway-waybar.lock"
+flock -n 9 || exit 0
+pgrep -u "$(id -u)" -x waybar >/dev/null && exit 0
+i=0
+until timeout 1 pactl info >/dev/null 2>&1; do
+    i=$((i + 1))
+    if [ "$i" -ge 50 ]; then
+        echo "$(date -Is): Audio unavailable; not starting Waybar. Retry with Alt+Shift+C." >>"$state/waybar.log"
+        exit 1
+    fi
+    sleep 0.2
+done
+exec waybar >>"$state/waybar.log" 2>&1
