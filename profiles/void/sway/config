@@ -66,6 +66,8 @@ client.urgent      #ff0000     #ff0000     #ffffff      #ff0000      #ff0000
 # Idle lock is ON: lock after 5 min, outputs off after 10 min, lock before sleep.
 # The helper keeps exactly one swayidle alive across config reloads.
 # Tune the timeouts inside ~/.local/bin/sway-idle-lock.
+# Void: elogind owns lid/sleep events; acpid must not also call zzz for them.
+# See docs/VOID.md in sway-dot-files for the backed-up system-side fix.
 exec_always ~/.local/bin/sway-idle-lock
 
 # Keep Nautilus warm so Super+E opens its first window without the cold
