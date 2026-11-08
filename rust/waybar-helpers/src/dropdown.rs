@@ -259,6 +259,7 @@ enum Kind {
 }
 #[derive(Clone)]
 struct Row {
+    revealer: gtk::Revealer,
     widget: gtk::EventBox,
     label: gtk::Label,
     kind: Kind,
@@ -285,6 +286,7 @@ struct Dropdown {
     refresh_rx: mpsc::Receiver<Result<Vec<String>, String>>,
     refresh_tx: mpsc::Sender<Result<Vec<String>, String>>,
     refresh_worker: Option<thread::JoinHandle<()>>,
+    transition_until: Option<Instant>,
 }
 impl Dropdown {
     fn finish(panel: &Panel, code: i32, text: Option<String>) {
@@ -307,13 +309,29 @@ impl Dropdown {
     }
     fn rebuild(panel: &Panel) {
         let mut p = panel.borrow_mut();
-        let old = std::mem::take(&mut p.rows);
-        for row in old {
-            p.holder.remove(&row.widget);
-        }
+        let mut old = std::mem::take(&mut p.rows);
+        let animate = !old.is_empty();
         for (idx, (kind, text)) in p.specs().into_iter().enumerate() {
+            // Match networks by SSID, not changing signal strength or list index.
+            if let Some(pos) = old.iter().position(|r| {
+                r.kind == kind && (kind != Kind::Item || item_key(&r.text) == item_key(&text))
+            }) {
+                let mut row = old.remove(pos);
+                row.label.set_text(&text);
+                row.text = text;
+                p.holder.reorder_child(&row.revealer, idx as i32);
+                p.rows.push(row);
+                continue;
+            }
             let widget = gtk::EventBox::new();
             widget.style_context().add_class("row");
+            if animate {
+                widget.style_context().add_class("fading");
+                let widget = widget.clone();
+                glib::timeout_add_local_once(Duration::from_millis(16), move || {
+                    widget.style_context().remove_class("fading");
+                });
+            }
             if kind != Kind::Item {
                 widget.style_context().add_class("action");
             }
@@ -325,31 +343,57 @@ impl Dropdown {
             label.set_ellipsize(pango::EllipsizeMode::End);
             widget.add(&label);
             let weak = Rc::downgrade(panel);
-            widget.connect_button_press_event(move |_, _| {
+            widget.connect_button_press_event(move |widget, _| {
                 if let Some(p) = weak.upgrade() {
-                    Self::choose(&p, idx);
+                    let idx = p.borrow().rows.iter().position(|r| r.widget == *widget);
+                    if let Some(idx) = idx {
+                        Self::choose(&p, idx);
+                    }
                 }
                 glib::Propagation::Stop
             });
             let weak = Rc::downgrade(panel);
-            widget.connect_enter_notify_event(move |_, e| {
+            widget.connect_enter_notify_event(move |widget, e| {
                 if e.detail() != gdk::NotifyType::Inferior
                     && let Some(panel) = weak.upgrade()
                 {
                     let mut p = panel.borrow_mut();
-                    p.selected = idx;
-                    p.selection();
-                    debug(format!("hover row {idx}"));
+                    if let Some(idx) = p.rows.iter().position(|r| r.widget == *widget) {
+                        p.selected = idx;
+                        p.selection();
+                        debug(format!("hover row {idx}"));
+                    }
                 }
                 glib::Propagation::Proceed
             });
-            p.holder.add(&widget);
+            let revealer = gtk::Revealer::new();
+            revealer.set_transition_type(gtk::RevealerTransitionType::SlideDown);
+            revealer.set_transition_duration(if animate { 220 } else { 0 });
+            revealer.add(&widget);
+            p.holder.add(&revealer);
+            p.holder.reorder_child(&revealer, idx as i32);
+            revealer.show_all();
+            revealer.set_reveal_child(true);
             p.rows.push(Row {
+                revealer,
                 widget,
                 label,
                 kind,
                 text,
             });
+        }
+        for row in old {
+            row.widget.set_sensitive(false);
+            row.widget.style_context().add_class("fading");
+            row.revealer.set_transition_duration(220);
+            row.revealer.set_reveal_child(false);
+            let holder = p.holder.clone();
+            glib::timeout_add_local_once(Duration::from_millis(240), move || {
+                holder.remove(&row.revealer);
+            });
+        }
+        if animate {
+            p.transition_until = Some(Instant::now() + Duration::from_millis(260));
         }
         p.selected = p.selected.min(p.rows.len().saturating_sub(1));
         p.holder.show_all();
@@ -360,6 +404,29 @@ impl Dropdown {
             p.rows.len(),
             p.selected
         ));
+        drop(p);
+        if animate {
+            let weak = Rc::downgrade(panel);
+            glib::timeout_add_local(Duration::from_millis(16), move || {
+                let Some(panel) = weak.upgrade() else {
+                    return glib::ControlFlow::Break;
+                };
+                let mut p = panel.borrow_mut();
+                if p.result.is_some() {
+                    return glib::ControlFlow::Break;
+                }
+                let active = p.transition_until.is_some_and(|end| Instant::now() < end);
+                if !active {
+                    p.transition_until = None;
+                }
+                p.size();
+                if active {
+                    glib::ControlFlow::Continue
+                } else {
+                    glib::ControlFlow::Break
+                }
+            });
+        }
     }
     fn selection(&self) {
         for (i, row) in self.rows.iter().enumerate() {
@@ -371,7 +438,7 @@ impl Dropdown {
             }
         }
         if let Some(row) = self.rows.get(self.selected) {
-            let a = row.widget.allocation();
+            let a = row.revealer.allocation();
             let adj = self.scroller.vadjustment();
             let top = f64::from(a.y());
             let bottom = top + f64::from(a.height());
@@ -385,7 +452,13 @@ impl Dropdown {
     fn size(&self) {
         let visible =
             (self.items.len().min(self.args.max_lines) + self.rows.len() - self.items.len()).max(1);
-        let height = visible as i32 * ROW_HEIGHT;
+        let height = if self.transition_until.is_some() {
+            let cap = (self.args.max_lines + self.rows.len() - self.items.len()).max(1) as i32
+                * ROW_HEIGHT;
+            self.holder.preferred_height().1.clamp(ROW_HEIGHT, cap)
+        } else {
+            visible as i32 * ROW_HEIGHT
+        };
         self.status
             .set_visible(self.items.is_empty() && !self.args.refresh_cmd.is_empty());
         self.scroller.set_max_content_height(-1);
@@ -667,6 +740,7 @@ fn run(mut args: Args, items: Vec<String>) -> Result<i32, String> {
         refresh_rx: rx,
         refresh_tx: tx,
         refresh_worker: None,
+        transition_until: None,
     }));
     panel.borrow().position();
     let entry = if args.password {

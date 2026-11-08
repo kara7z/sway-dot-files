@@ -18,7 +18,9 @@ window { background-color: black; }
 }
 .row {
     color: white;
+    transition: opacity 220ms ease-in-out;
 }
+.row.fading { opacity: 0; }
 .row:hover { background-color: #1a1a1a; }
 .row.selected {
     background-color: #262626;

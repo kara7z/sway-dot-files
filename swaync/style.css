@@ -45,6 +45,12 @@
   font-family: monospace;
 }
 
+/* Keep layer-shell windows transparent; only cards and the panel are dark. */
+notificationwindow,
+blankwindow {
+  background: transparent;
+}
+
 /* === Animation: slide from right to left like sway workspace switch === */
 /* SwayFX: animation_duration_ms 250 (sway:33) - using px to avoid GTK % error and negative width warnings */
 @keyframes slideInRight {
