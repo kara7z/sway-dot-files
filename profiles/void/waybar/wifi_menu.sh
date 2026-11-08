@@ -51,7 +51,7 @@ ask() {
 # Masked password prompt (dropdown entry)
 ask_password() {
     run_dropdown --anchor-x "$WIFI_ANCHOR_X" --anchor-edge top --margin-top 5 \
-        --password --prompt "Password for $1" --stay-open --refocus
+        --password --prompt "Password for $1" --stay-open --refocus </dev/null
 }
 
 # --- the network list --------------------------------------------------------

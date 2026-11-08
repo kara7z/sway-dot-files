@@ -32,7 +32,7 @@ LOCK="${MENU_LOCK:-${XDG_RUNTIME_DIR:-/tmp}/waybar-menu.lock}"
 # finishes on its own -- empty result -- and its trap releases the lock.
 run_dropdown() {                              # arguments pass straight through
     out="${TMPDIR:-/tmp}/waybar-menu-$$.out"
-    "$DROPDOWN" "$@" >"$out" 2>/dev/null &
+    "$DROPDOWN" "$@" <&3 >"$out" 2>/dev/null &
     panel=$!
     [ -d "$LOCK" ] && echo "$panel" > "$LOCK/panel"
     wait "$panel"
@@ -40,7 +40,7 @@ run_dropdown() {                              # arguments pass straight through
     [ -f "$out" ] && cat "$out"
     rm -f "$out" "$LOCK/panel"
     return "$rc"
-}
+} 3<&0
 
 # Small action menu helper: ask <prompt> <lines>  (items on stdin)
 ask() {
@@ -51,7 +51,7 @@ ask() {
 # Masked password prompt (dropdown entry)
 ask_password() {
     run_dropdown --anchor-x "$WIFI_ANCHOR_X" --anchor-edge top --margin-top 5 \
-        --password --prompt "Password for $1" --stay-open --refocus
+        --password --prompt "Password for $1" --stay-open --refocus </dev/null
 }
 
 # --- the network list --------------------------------------------------------

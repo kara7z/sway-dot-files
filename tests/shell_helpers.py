@@ -66,7 +66,49 @@ esac
         self.env["DROPDOWN"] = str(dropdown)
         self.run_helper("waybar/wifi_menu.sh")
         self.assertEqual((self.root / "connect.args").read_text().splitlines(),
-                         ["device", "wifi", "connect", "Cafe:Guest", "password", "secret:test"])
+                          ["device", "wifi", "connect", "Cafe:Guest", "password", "secret:test"])
+
+    def test_wifi_dialog_stdin(self):
+        self.stub("nmcli", r'''
+case "$*" in
+  *active,signal,security,ssid*) echo 'no:90:WPA2:Test WiFi' ;;
+  *DEVICE,TYPE*) echo 'wlan0:wifi' ;;
+  *active,ssid*) echo 'yes:Other' ;;
+  *security,ssid*) echo 'WPA2:Test WiFi' ;;
+  *'connection show'*) : ;;
+  *'wifi connect'*) printf '%s\n' "$@" > "$TEST_ROOT/connect.args" ;;
+  *) exit 2 ;;
+esac
+''')
+        dropdown = self.stub("dropdown", r'''
+case "$*" in
+  *--password*) cat > "$TEST_ROOT/password.stdin"; echo secret ;;
+  *--refresh-cmd*) cat >/dev/null; echo '  󰤨  90%  Test WiFi' ;;
+  *)
+    input=$(cat)
+    [ "$input" = "$(printf 'Connect\nCancel')" ] || exit 2
+    echo Connect ;;
+esac
+''')
+        self.stub("notify-send", "exit 0\n")
+        self.env["DROPDOWN"] = str(dropdown)
+        for script in (REPO / "waybar/wifi_menu.sh",
+                       REPO / "profiles/void/waybar/wifi_menu.sh"):
+            with self.subTest(script=str(script)):
+                # Keep stdin open, like Waybar's inherited desktop terminal.
+                child = subprocess.Popen([str(script)], env=self.env,
+                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                         stderr=subprocess.PIPE)
+                try:
+                    self.assertEqual(child.wait(timeout=5), 0)
+                    self.assertEqual((self.root / "password.stdin").read_text(), "")
+                    self.assertEqual((self.root / "connect.args").read_text().splitlines(),
+                                     ["device", "wifi", "connect", "Test WiFi",
+                                      "password", "secret"])
+                finally:
+                    if child.poll() is None:
+                        child.kill()
+                    child.communicate(timeout=5)
 
     def test_menu_second_click_and_switch(self):
         dropdown = self.stub("dropdown", "exec sleep 30\n")
