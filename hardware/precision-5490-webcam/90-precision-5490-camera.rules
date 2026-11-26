@@ -1,0 +1,4 @@
+# The IPU may have deferred its probe before the IVSC CSI client appeared.
+# Ask PCI to probe the camera once on that client's add event. drivers_probe
+# leaves an already-bound device alone and does not start a video stream.
+ACTION=="add", SUBSYSTEM=="mei", KERNEL=="intel_vsc-92335fcf-3203-4472-af93-7b4453ac29da", TEST=="/sys/bus/pci/devices/0000:00:05.0/vendor", RUN+="/bin/sh -c 'echo 0000:00:05.0 > /sys/bus/pci/drivers_probe'"

@@ -1,0 +1,30 @@
+#!/bin/bash
+set -eu
+
+# Start once per desktop PipeWire session. Only the output stays open;
+# v4l2-relayd starts its input on a V4L2 stream-on event.
+exec 9>"${XDG_RUNTIME_DIR:?}/laptop-webcam.lock"
+flock -n 9 || exit 0
+device=/dev/video48
+for ((i = 0; i < 30; i++)); do
+    [[ -w $device && -S $XDG_RUNTIME_DIR/pipewire-0 ]] && break
+    sleep 0.5
+done
+[[ $(cat /sys/devices/virtual/video4linux/video48/name 2>/dev/null) == 'Laptop Webcam' ]]
+
+# Use the entire active sensor area so smaller libcamera modes cannot crop it.
+format=video/x-raw,format=YUY2,width=1280,height=800,framerate=30/1,pixel-aspect-ratio=1/1
+/usr/local/libexec/v4l2-relayd \
+    -i "pipewiresrc target-object=libcamera_input.__SB_.PC00.LNK1 ! video/x-raw,width=1280,height=800 ! capssetter caps=\"video/x-raw,pixel-aspect-ratio=1/1\" ! videoconvert ! videorate ! capsfilter caps=\"$format\"" \
+    -s 'videotestsrc pattern=black num-buffers=4' \
+    -o "appsrc name=appsrc caps=$format ! videoconvert ! v4l2sink name=v4l2sink device=$device sync=false" &
+relay=$!
+pw-cli -m info 0 >/dev/null &
+monitor=$!
+cleanup() {
+    kill -TERM "$relay" "$monitor" 2>/dev/null || :
+    wait || :
+}
+trap cleanup EXIT
+trap 'exit' HUP INT TERM
+wait -n "$relay" "$monitor"

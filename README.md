@@ -6,6 +6,8 @@ runit/elogind, PipeWire, Kitty, and Flameshot adaptations.
 
 ![Void Linux SwayFX desktop](docs/screenshots/void-desktop.png)
 
+Optional hardware setup: [Dell Precision 5490 webcam on Void Linux](docs/VOID-WEBCAM.md).
+
 The installer detects the distribution; use `--profile arch` or `--profile void`
 to override. On Void, `./install-void.sh --all` installs dependencies and the
 Void overlay without changing the Arch profile.
